@@ -2,7 +2,7 @@ from fastapi import APIRouter, Path, HTTPException, Depends, Query
 from typing import Optional, List
 import logging
 
-from app.models.schemas import StockInfo, PriceData, CompanyInfo, ErrorResponse
+from app.models.schemas import StockInfo, PriceData, CompanyInfo, ErrorResponse, HistoricalDataResponse, HistoricalDataPoint
 from app.services.yfinance_service import YFinanceService
 from app.core.exceptions import TickerNotFoundError, YFinanceError
 from app.core.dependencies import get_current_client
@@ -190,10 +190,12 @@ async def get_company_info(
 
 @router.get(
     "/stock/{ticker}/history",
+    response_model=HistoricalDataResponse,
     summary="Get historical price data",
     description="Get historical price data for a stock",
     responses={
-        200: {"description": "Historical data"},
+        200: {"model": HistoricalDataResponse, "description": "Historical data"},
+        400: {"model": ErrorResponse, "description": "Invalid request"},
         404: {"model": ErrorResponse, "description": "Ticker not found"},
         503: {"model": ErrorResponse, "description": "YFinance service unavailable"}
     }
@@ -203,7 +205,7 @@ async def get_historical_data(
     period: str = Query("1y", description="Time period (1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, max)"),
     yfinance_service: YFinanceService = Depends(get_yfinance_service),
     current_client: Client = Depends(get_current_client)
-):
+) -> HistoricalDataResponse:
     """
     Get historical price data for a stock.
     
@@ -231,14 +233,29 @@ async def get_historical_data(
                 detail=f"Invalid period. Must be one of: {', '.join(valid_periods)}"
             )
         
-        data = yfinance_service.get_historical_data(ticker.strip().upper(), period)
+        ticker_upper = ticker.strip().upper()
+        data = yfinance_service.get_historical_data(ticker_upper, period)
         
-        # Convert DataFrame to JSON-serializable format
-        return {
-            "ticker": ticker.upper(),
-            "period": period,
-            "data": data.to_dict('records') if not data.empty else []
-        }
+        # Convert DataFrame to list of HistoricalDataPoint objects
+        data_points = []
+        if not data.empty:
+            for date, row in data.iterrows():
+                data_points.append(HistoricalDataPoint(
+                    date=date.to_pydatetime(),
+                    open=row.get('Open'),
+                    high=row.get('High'),
+                    low=row.get('Low'),
+                    close=row.get('Close'),
+                    volume=int(row.get('Volume', 0)),
+                    dividends=row.get('Dividends'),
+                    stock_splits=row.get('Stock Splits')
+                ))
+        
+        return HistoricalDataResponse(
+            symbol=ticker_upper,
+            period=period,
+            data=data_points
+        )
         
     except TickerNotFoundError as e:
         logger.warning(f"Ticker not found: {ticker}")

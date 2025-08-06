@@ -59,6 +59,23 @@ class ErrorResponse(BaseModel):
     detail: Optional[str] = Field(None, description="Detailed error information")
     status_code: int = Field(..., description="HTTP status code")
 
+class HistoricalDataPoint(BaseModel):
+    """Schema for a single point of historical price data"""
+    date: datetime = Field(..., description="Date and time of the data point")
+    open: Optional[float] = Field(None, description="Opening price")
+    high: Optional[float] = Field(None, description="Highest price")
+    low: Optional[float] = Field(None, description="Lowest price")
+    close: Optional[float] = Field(None, description="Closing price")
+    volume: Optional[int] = Field(None, description="Trading volume")
+    dividends: Optional[float] = Field(None, description="Dividends paid")
+    stock_splits: Optional[float] = Field(None, description="Stock splits")
+
+class HistoricalDataResponse(BaseModel):
+    """Schema for historical price data response"""
+    symbol: str = Field(..., description="Stock ticker symbol")
+    period: str = Field(..., description="Time period of the data")
+    data: List[HistoricalDataPoint] = Field(..., description="List of historical data points")
+
 class HealthCheck(BaseModel):
     """Schema for health check response"""
     status: str = Field(..., description="Service status")
