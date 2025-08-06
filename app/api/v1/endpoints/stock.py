@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Path, HTTPException, Depends, Query
-from typing import Optional
+from typing import Optional, List
 import logging
 
 from app.models.schemas import StockInfo, PriceData, CompanyInfo, ErrorResponse
@@ -80,19 +80,7 @@ async def get_stock_price(
     current_client: Client = Depends(get_current_client)
 ) -> PriceData:
     """
-    Get current price data for a stock.
-    
-    Returns real-time price information including:
-    - Current price
-    - Previous close
-    - Day's high/low
-    - Volume
-    - Market cap
-    - P/E ratio
-    - Dividend yield
-    - Price change and percentage
-    
-    - **ticker**: The stock ticker symbol
+    Get current price data for a stock (single ticker).
     """
     try:
         if not ticker or len(ticker.strip()) == 0:
@@ -100,9 +88,7 @@ async def get_stock_price(
                 status_code=400,
                 detail="Ticker symbol is required"
             )
-        
         return yfinance_service.get_price_data(ticker.strip().upper())
-        
     except TickerNotFoundError as e:
         logger.warning(f"Ticker not found: {ticker}")
         raise HTTPException(status_code=404, detail=e.detail)
@@ -112,6 +98,46 @@ async def get_stock_price(
     except Exception as e:
         logger.error(f"Unexpected error getting price data for {ticker}: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+@router.get(
+    "/stock/{tickers}/prices",
+    response_model=List[PriceData],
+    summary="Get stock price data for multiple tickers",
+    description="Get current price information for multiple stocks. Returns a list of price data objects. If a ticker is invalid or fails, it will be omitted from the result.",
+    responses={
+        200: {"description": "List of price data"},
+        400: {"model": ErrorResponse, "description": "Invalid request"},
+        503: {"model": ErrorResponse, "description": "YFinance service unavailable"}
+    }
+)
+async def get_multiple_stock_prices(
+    tickers: str,
+    yfinance_service: YFinanceService = Depends(get_yfinance_service),
+    current_client: Client = Depends(get_current_client)
+) -> list[PriceData]:
+    """
+    Get current price data for multiple stocks.
+    """
+    tickers_list = [ticker.strip() for ticker in tickers.split(",") if ticker.strip()]
+    logger.info(f"Received request for multiple stock prices: {tickers_list}")
+    if not tickers_list:
+        logger.warning("No tickers provided or invalid tickers parameter.")
+        raise HTTPException(status_code=400, detail="At least one ticker symbol is required")
+    results = []
+    for ticker in tickers_list:
+        try:
+            logger.info(f"Fetching price data for ticker: {ticker}")
+            price = yfinance_service.get_price_data(ticker.upper())
+            logger.info(f"Successfully fetched price data for {ticker}: {price}")
+            results.append(price)
+        except (TickerNotFoundError, YFinanceError) as e:
+            logger.warning(f"Failed to get price for {ticker}: {str(e)}")
+            continue
+        except Exception as e:
+            logger.error(f"Unexpected error getting price data for {ticker}: {str(e)}", exc_info=True)
+            continue
+    logger.info(f"Returning price data for {len(results)} tickers out of {len(tickers_list)} requested.")
+    return results
 
 @router.get(
     "/stock/{ticker}/info",
