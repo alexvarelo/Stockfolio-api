@@ -46,11 +46,21 @@ class CompanyInfo(BaseModel):
     employees: Optional[int] = Field(None, description="Number of employees")
     founded: Optional[int] = Field(None, description="Year founded")
 
+class NewsArticle(BaseModel):
+    """Schema for news articles related to stocks"""
+    title: str = Field(..., description="Article title")
+    publisher: Optional[str] = Field(None, description="News publisher")
+    link: Optional[str] = Field(None, description="URL to the full article")
+    published_at: Optional[datetime] = Field(None, description="Publication date and time")
+    thumbnail: Optional[Dict[str, Any]] = Field(None, description="Thumbnail image information")
+    related_tickers: List[str] = Field(default_factory=list, description="List of related ticker symbols")
+
 class StockInfo(BaseModel):
     """Schema for comprehensive stock information"""
     symbol: str = Field(..., description="Stock ticker symbol")
     price_data: PriceData = Field(..., description="Current price information")
     company_info: CompanyInfo = Field(..., description="Company information")
+    news: List[NewsArticle] = Field(default_factory=list, description="List of recent news articles")
     additional_data: Optional[Dict[str, Any]] = Field(None, description="Additional financial data")
 
 class ErrorResponse(BaseModel):
@@ -75,6 +85,26 @@ class HistoricalDataResponse(BaseModel):
     symbol: str = Field(..., description="Stock ticker symbol")
     period: str = Field(..., description="Time period of the data")
     data: List[HistoricalDataPoint] = Field(..., description="List of historical data points")
+
+class MarketData(BaseModel):
+    """Schema for market data"""
+    symbol: str = Field(..., description="Stock ticker symbol")
+    name: str = Field(..., description="Company name")
+    price: Optional[float] = Field(None, description="Current price")
+    change: Optional[float] = Field(None, description="Price change")
+    change_percent: Optional[float] = Field(None, description="Price change percentage")
+    volume: Optional[int] = Field(None, description="Trading volume")
+    market_cap: Optional[float] = Field(None, description="Market capitalization")
+    pe_ratio: Optional[float] = Field(None, description="Price-to-earnings ratio")
+
+
+class MarketDataResponse(BaseModel):
+    """Schema for market data response"""
+    gainers: List[MarketData] = Field(..., description="Top gainers")
+    losers: List[MarketData] = Field(..., description="Top losers")
+    active: List[MarketData] = Field(..., description="Most active stocks")
+    last_updated: datetime = Field(..., description="Last update timestamp")
+
 
 class HealthCheck(BaseModel):
     """Schema for health check response"""

@@ -166,6 +166,38 @@ class SearchService:
                 unique_results.append(result)
         
         return unique_results
+        
+    def _get_search_variations(self, query: str) -> List[str]:
+        """Generate common variations of a search query"""
+        variations = []
+        
+        # Original query
+        variations.append(query)
+        
+        # Common suffixes to try appending/removing
+        suffixes = ['.TO', '.V', '.NE', '.BE', '.F', '.DE', '.PA', '.L', '.MI', '.AS', '.BR', '.AX', 
+                   '.NZ', '.SI', '.KS', '.KQ', '.SS', '.SZ', '.HK', '.T', '.TWO', '.TW', '.SR']
+        
+        # Try removing any existing suffix and adding common ones
+        base_query = query
+        for suffix in suffixes:
+            if query.endswith(suffix):
+                base_query = query[:-len(suffix)]
+                variations.append(base_query)
+                break
+        
+        # Add common suffixes
+        for suffix in suffixes:
+            variations.append(f"{base_query}{suffix}")
+        
+        # Try with/without spaces and dots
+        variations.append(query.replace(' ', ''))
+        variations.append(query.replace('.', ''))
+        variations.append(query.replace(' ', '').replace('.', ''))
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        return [x for x in variations if not (x in seen or seen.add(x))]
     
     def search_by_isin(self, isin: str) -> Optional[SearchResult]:
         """Search for a specific instrument by ISIN"""

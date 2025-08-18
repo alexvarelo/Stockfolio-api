@@ -2,7 +2,7 @@ from fastapi import APIRouter, Path, HTTPException, Depends, Query
 from typing import Optional, List
 import logging
 
-from app.models.schemas import StockInfo, PriceData, CompanyInfo, ErrorResponse, HistoricalDataResponse, HistoricalDataPoint
+from app.models.schemas import StockInfo, PriceData, CompanyInfo, ErrorResponse, HistoricalDataResponse, HistoricalDataPoint, MarketDataResponse
 from app.services.yfinance_service import YFinanceService
 from app.core.exceptions import TickerNotFoundError, YFinanceError
 from app.core.dependencies import get_current_client
@@ -15,6 +15,47 @@ router = APIRouter()
 def get_yfinance_service() -> YFinanceService:
     """Dependency to get yfinance service instance"""
     return YFinanceService()
+
+@router.get(
+    "/market",
+    response_model=MarketDataResponse,
+    summary="Get market overview data",
+    description="""
+    Get market overview data including:
+    - Top gainers
+    - Top losers
+    - Most active stocks
+    
+    Data is cached for 5 minutes to reduce API calls.
+    """,
+    responses={
+        200: {"description": "Market overview data"},
+        503: {"model": ErrorResponse, "description": "YFinance service unavailable"}
+    }
+)
+async def get_market_data(
+    yfinance_service: YFinanceService = Depends(get_yfinance_service),
+    current_client: Client = Depends(get_current_client)
+) -> MarketDataResponse:
+    """
+    Get market overview data including top gainers, losers, and most active stocks.
+    
+    Returns a snapshot of current market activity with key metrics for each stock.
+    """
+    try:
+        return yfinance_service.get_market_data()
+    except YFinanceError as e:
+        logger.error(f"Error getting market data: {str(e)}")
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "Failed to fetch market data", "detail": str(e)}
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error getting market data: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "Internal server error", "detail": str(e)}
+        )
 
 @router.get(
     "/stock/{ticker}",

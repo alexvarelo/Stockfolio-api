@@ -6,7 +6,7 @@ import logging
 import time
 
 from app.core.exceptions import TickerNotFoundError, YFinanceError
-from app.models.schemas import PriceData, CompanyInfo, StockInfo
+from app.models.schemas import PriceData, CompanyInfo, StockInfo, HistoricalDataResponse, HistoricalDataPoint, MarketData, MarketDataResponse
 
 logger = logging.getLogger(__name__)
 
@@ -85,11 +85,86 @@ class YFinanceService:
         
         raise YFinanceError("get_ticker", "Max retries exceeded")
     
+    def _get_news_articles(self, ticker: yf.Ticker) -> List[Dict[str, Any]]:
+        """Get news articles for a given ticker"""
+        try:
+            logger.debug(f"Attempting to fetch news for ticker: {ticker.ticker}")
+            
+            # Try to get news using the news attribute
+            if hasattr(ticker, 'news') and callable(ticker.news):
+                logger.debug("Using ticker.news() method to fetch news")
+                news = ticker.news
+                logger.info(f"Retrieved {len(news)} news articles using ticker.news() {news}")
+                return news
+            
+            # Fallback to alternative method if available
+            if hasattr(ticker, 'get_news') and callable(ticker.get_news):
+                logger.debug("Using ticker.get_news() method to fetch news")
+                news = ticker.get_news()
+                logger.info(f"Retrieved {len(news)} news articles using ticker.get_news() {news}")
+                return news
+                
+            logger.warning("No news methods available on ticker object")
+            return []
+            
+        except Exception as e:
+            logger.error(f"Error fetching news data for {ticker.ticker}: {str(e)}", exc_info=True)
+            return []
+    
     def get_stock_info(self, symbol: str) -> StockInfo:
-        """Get comprehensive stock information"""
+        """Get comprehensive stock information including news"""
         try:
             ticker = self.get_ticker(symbol)
             info = ticker.info
+            
+            # Get news articles
+            news_data = self._get_news_articles(ticker)
+            news_articles = []
+            
+            for article in news_data:
+                try:
+                    # Handle both direct article format and nested content format
+                    content = article.get('content', article)
+                    
+                    # Extract thumbnail - ensure it's always a dictionary with a URL field
+                    thumbnail = {}
+                    if 'thumbnail' in content:
+                        thumb_data = content['thumbnail']
+                        if 'resolutions' in thumb_data and thumb_data['resolutions']:
+                            thumbnail['url'] = thumb_data['resolutions'][0].get('url')
+                        elif 'originalUrl' in thumb_data:
+                            thumbnail['url'] = thumb_data['originalUrl']
+                        
+                        # Preserve other thumbnail properties if they exist
+                        if 'originalWidth' in thumb_data:
+                            thumbnail['width'] = thumb_data['originalWidth']
+                        if 'originalHeight' in thumb_data:
+                            thumbnail['height'] = thumb_data['originalHeight']
+                        if 'caption' in thumb_data:
+                            thumbnail['caption'] = thumb_data['caption']
+                    
+                    # Handle different content types
+                    article_data = {
+                        'id': content.get('id'),
+                        'title': content.get('title', ''),
+                        'content_type': content.get('contentType', 'ARTICLE'),
+                        'summary': content.get('summary', ''),
+                        'published_at': content.get('pubDate'),
+                        'publisher': content.get('provider', {}).get('displayName', ''),
+                        'link': content.get('clickThroughUrl', {}).get('url', ''),
+                        'thumbnail': thumbnail,
+                        'is_video': content.get('contentType') == 'VIDEO',
+                        'description': content.get('description', '')
+                    }
+                    
+                    # Add related tickers if available
+                    if 'relatedTickers' in content:
+                        article_data['related_tickers'] = content['relatedTickers']
+                    
+                    news_articles.append(article_data)
+                    
+                except Exception as e:
+                    logger.warning(f"Error processing news article: {str(e)}", exc_info=True)
             
             # Extract price data
             price_data = PriceData(
@@ -121,10 +196,12 @@ class YFinanceService:
                 founded=info.get('founded')
             )
             
+            # Create StockInfo with news articles
             return StockInfo(
                 symbol=symbol.upper(),
                 price_data=price_data,
                 company_info=company_info,
+                news=news_articles,
                 additional_data=info
             )
             
@@ -195,4 +272,86 @@ class YFinanceService:
             raise
         except Exception as e:
             logger.error(f"Error getting historical data for {symbol}: {str(e)}")
-            raise YFinanceError("get_historical_data", str(e)) 
+            raise YFinanceError("get_historical_data", str(e))
+            
+    def get_market_data(self) -> MarketDataResponse:
+        """Get market data including top gainers, losers, and most active stocks"""
+        cache_key = "market_data"
+        current_time = time.time()
+        
+        # Check cache first
+        if cache_key in self.cache:
+            cached_data = self.cache[cache_key]
+            if current_time - cached_data['timestamp'] < self.cache_duration:
+                logger.debug("Using cached market data")
+                return cached_data['data']
+        
+        try:
+            self._rate_limit()
+            
+            # Initialize Market with 'us_market' parameter
+            market = yf.Market('us_market')
+            
+            # Get top gainers
+            gainers = market.get_top_gainers()
+            gainers_data = [
+                MarketData(
+                    symbol=row['symbol'],
+                    name=row.get('shortName', ''),
+                    price=row.get('regularMarketPrice'),
+                    change=row.get('regularMarketChange'),
+                    change_percent=row.get('regularMarketChangePercent'),
+                    volume=row.get('regularMarketVolume'),
+                    market_cap=row.get('marketCap'),
+                    pe_ratio=row.get('trailingPE')
+                ) for _, row in gainers.iterrows()
+            ]
+            
+            # Get top losers
+            losers = market.get_top_losers()
+            losers_data = [
+                MarketData(
+                    symbol=row['symbol'],
+                    name=row.get('shortName', ''),
+                    price=row.get('regularMarketPrice'),
+                    change=row.get('regularMarketChange'),
+                    change_percent=row.get('regularMarketChangePercent'),
+                    volume=row.get('regularMarketVolume'),
+                    market_cap=row.get('marketCap'),
+                    pe_ratio=row.get('trailingPE')
+                ) for _, row in losers.iterrows()
+            ]
+            
+            # Get most active stocks
+            active = market.get_most_active()
+            active_data = [
+                MarketData(
+                    symbol=row['symbol'],
+                    name=row.get('shortName', ''),
+                    price=row.get('regularMarketPrice'),
+                    change=row.get('regularMarketChange'),
+                    change_percent=row.get('regularMarketChangePercent'),
+                    volume=row.get('regularMarketVolume'),
+                    market_cap=row.get('marketCap'),
+                    pe_ratio=row.get('trailingPE')
+                ) for _, row in active.iterrows()
+            ]
+            
+            response = MarketDataResponse(
+                gainers=gainers_data,
+                losers=losers_data,
+                active=active_data,
+                last_updated=datetime.now()
+            )
+            
+            # Cache the result
+            self.cache[cache_key] = {
+                'data': response,
+                'timestamp': current_time
+            }
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error getting market data: {str(e)}")
+            raise YFinanceError("get_market_data", str(e))
