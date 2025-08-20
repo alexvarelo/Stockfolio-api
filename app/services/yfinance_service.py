@@ -111,6 +111,72 @@ class YFinanceService:
             logger.error(f"Error fetching news data for {ticker.ticker}: {str(e)}", exc_info=True)
             return []
     
+    def get_news_for_tickers(self, tickers: List[str], limit_per_ticker: int = 5) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Get news articles for multiple tickers
+        
+        Args:
+            tickers: List of stock ticker symbols
+            limit_per_ticker: Maximum number of news items per ticker
+            
+        Returns:
+            Dictionary mapping tickers to their news articles
+        """
+        logger.info(f"Fetching news for {len(tickers)} tickers")
+        all_news = {}
+        
+        for ticker_symbol in tickers:
+            try:
+                ticker = self.get_ticker(ticker_symbol)
+                news_data = self._get_news_articles(ticker)[:limit_per_ticker]
+                
+                processed_articles = []
+                for article in news_data:
+                    try:
+                        content = article.get('content', article)
+                        
+                        # Extract thumbnail
+                        thumbnail = {}
+                        if 'thumbnail' in content:
+                            thumb_data = content['thumbnail']
+                            if 'resolutions' in thumb_data and thumb_data['resolutions']:
+                                thumbnail['url'] = thumb_data['resolutions'][0].get('url')
+                            elif 'originalUrl' in thumb_data:
+                                thumbnail['url'] = thumb_data['originalUrl']
+                            
+                            if 'originalWidth' in thumb_data:
+                                thumbnail['width'] = thumb_data['originalWidth']
+                            if 'originalHeight' in thumb_data:
+                                thumbnail['height'] = thumb_data['originalHeight']
+                            if 'caption' in thumb_data:
+                                thumbnail['caption'] = thumb_data['caption']
+                        
+                        article_data = {
+                            'id': content.get('id'),
+                            'title': content.get('title', ''),
+                            'content_type': content.get('contentType', 'ARTICLE'),
+                            'summary': content.get('summary', ''),
+                            'published_at': content.get('pubDate'),
+                            'publisher': content.get('provider', {}).get('displayName', ''),
+                            'link': content.get('clickThroughUrl', {}).get('url', ''),
+                            'thumbnail': thumbnail or None,
+                            'is_video': content.get('contentType') == 'VIDEO',
+                            'description': content.get('description', ''),
+                            'related_tickers': content.get('relatedTickers', [])
+                        }
+                        processed_articles.append(article_data)
+                        
+                    except Exception as e:
+                        logger.error(f"Error processing article for {ticker_symbol}: {str(e)}", exc_info=True)
+                
+                all_news[ticker_symbol] = processed_articles
+                
+            except Exception as e:
+                logger.error(f"Error fetching news for {ticker_symbol}: {str(e)}")
+                all_news[ticker_symbol] = []
+        
+        return all_news
+        
     def get_stock_info(self, symbol: str) -> StockInfo:
         """Get comprehensive stock information including news"""
         try:

@@ -48,12 +48,34 @@ class CompanyInfo(BaseModel):
 
 class NewsArticle(BaseModel):
     """Schema for news articles related to stocks"""
+    id: Optional[str] = Field(None, description="Unique identifier for the article")
     title: str = Field(..., description="Article title")
     publisher: Optional[str] = Field(None, description="News publisher")
     link: Optional[str] = Field(None, description="URL to the full article")
     published_at: Optional[datetime] = Field(None, description="Publication date and time")
     thumbnail: Optional[Dict[str, Any]] = Field(None, description="Thumbnail image information")
     related_tickers: List[str] = Field(default_factory=list, description="List of related ticker symbols")
+    content_type: Optional[str] = Field(None, description="Type of content (ARTICLE, VIDEO, etc.)")
+    summary: Optional[str] = Field(None, description="Short summary of the article")
+    description: Optional[str] = Field(None, description="Full description or content preview")
+    is_video: bool = Field(False, description="Whether the content is a video")
+
+class BatchNewsRequest(BaseModel):
+    """Schema for batch news request"""
+    tickers: List[str] = Field(..., min_items=1, max_items=50, description="List of stock ticker symbols")
+    limit_per_ticker: Optional[int] = Field(5, ge=1, le=20, description="Maximum number of news items per ticker")
+    days: Optional[int] = Field(7, ge=1, le=30, description="Number of days to look back for news")
+
+class TickerNews(BaseModel):
+    """Schema for news related to a specific ticker"""
+    ticker: str = Field(..., description="Stock ticker symbol")
+    news: List[NewsArticle] = Field(..., description="List of news articles")
+
+class BatchNewsResponse(BaseModel):
+    """Schema for batch news response"""
+    results: List[TickerNews] = Field(..., description="List of news by ticker")
+    total_articles: int = Field(..., description="Total number of articles returned")
+    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Response timestamp")
 
 class StockInfo(BaseModel):
     """Schema for comprehensive stock information"""

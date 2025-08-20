@@ -1,8 +1,13 @@
-from fastapi import APIRouter, Path, HTTPException, Depends, Query
-from typing import Optional, List
+from fastapi import APIRouter, Path, HTTPException, Depends, Query, Body
+from typing import Optional, List, Dict, Any
 import logging
+from datetime import datetime, timedelta
 
-from app.models.schemas import StockInfo, PriceData, CompanyInfo, ErrorResponse, HistoricalDataResponse, HistoricalDataPoint, MarketDataResponse
+from app.models.schemas import (
+    StockInfo, PriceData, CompanyInfo, ErrorResponse, HistoricalDataResponse, 
+    HistoricalDataPoint, MarketDataResponse, BatchNewsRequest, BatchNewsResponse, 
+    TickerNews, NewsArticle
+)
 from app.services.yfinance_service import YFinanceService
 from app.core.exceptions import TickerNotFoundError, YFinanceError
 from app.core.dependencies import get_current_client
@@ -15,6 +20,94 @@ router = APIRouter()
 def get_yfinance_service() -> YFinanceService:
     """Dependency to get yfinance service instance"""
     return YFinanceService()
+
+@router.post(
+    "/news/batch",
+    response_model=BatchNewsResponse,
+    summary="Get news for multiple tickers",
+    description="""
+    Get news articles for multiple stock tickers in a single request.
+    
+    - **tickers**: List of stock ticker symbols (max 50)
+    - **limit_per_ticker**: Maximum number of news items per ticker (1-20)
+    - **days**: Number of days to look back for news (1-30)
+    """,
+    responses={
+        200: {"description": "News articles for the requested tickers"},
+        400: {"model": ErrorResponse, "description": "Invalid request parameters"},
+        503: {"model": ErrorResponse, "description": "YFinance service unavailable"}
+    }
+)
+async def get_batch_news(
+    request: BatchNewsRequest,
+    yfinance_service: YFinanceService = Depends(get_yfinance_service),
+    current_client: Client = Depends(get_current_client)
+) -> BatchNewsResponse:
+    """
+    Get news articles for multiple stock tickers.
+    
+    This endpoint allows you to fetch news articles for multiple stocks in a single request.
+    Each ticker will return up to the specified number of most recent news articles.
+    """
+    try:
+        # Get news for all tickers
+        ticker_news = yfinance_service.get_news_for_tickers(
+            tickers=request.tickers,
+            limit_per_ticker=request.limit_per_ticker
+        )
+        
+        # Convert to response format
+        results = []
+        for ticker, articles in ticker_news.items():
+            # Convert each article to NewsArticle model
+            news_articles = []
+            for article in articles:
+                try:
+                    # Convert published_at to datetime if it's a string
+                    published_at = article.get('published_at')
+                    if isinstance(published_at, str):
+                        try:
+                            published_at = datetime.fromisoformat(published_at.replace('Z', '+00:00'))
+                        except (ValueError, AttributeError):
+                            published_at = None
+                    
+                    news_articles.append(NewsArticle(
+                        id=article.get('id'),
+                        title=article['title'],
+                        publisher=article.get('publisher'),
+                        link=article.get('link'),
+                        published_at=published_at,
+                        thumbnail=article.get('thumbnail'),
+                        related_tickers=article.get('related_tickers', []),
+                        content_type=article.get('content_type'),
+                        summary=article.get('summary'),
+                        description=article.get('description'),
+                        is_video=article.get('is_video', False)
+                    ))
+                except Exception as e:
+                    logger.error(f"Error formatting article for {ticker}: {str(e)}", exc_info=True)
+            
+            results.append(TickerNews(
+                ticker=ticker,
+                news=news_articles
+            ))
+        
+        total_articles = sum(len(tn.news) for tn in results)
+        
+        return BatchNewsResponse(
+            results=results,
+            total_articles=total_articles
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in get_batch_news: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "Failed to fetch news data",
+                "detail": str(e)
+            }
+        )
 
 @router.get(
     "/market",
