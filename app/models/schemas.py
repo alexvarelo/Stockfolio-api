@@ -9,8 +9,40 @@ class SearchResult(BaseModel):
     name: str = Field(..., description="Company name")
     exchange: Optional[str] = Field(None, description="Stock exchange")
     type: Optional[str] = Field(None, description="Instrument type")
-    isin: Optional[str] = Field(None, description="ISIN code")
+    currency: Optional[str] = Field(None, description="Currency")
     country: Optional[str] = Field(None, description="Country of listing")
+    
+    # Price fields
+    regular_market_price: Optional[float] = Field(None, description="Current regular market price")
+    regular_market_change: Optional[float] = Field(None, description="Price change")
+    regular_market_change_percent: Optional[float] = Field(None, description="Price change percentage")
+    intraday_price_change: Optional[float] = Field(None, description="Intraday price change")
+    bid: Optional[float] = Field(None, description="Bid price")
+    ask: Optional[float] = Field(None, description="Ask price")
+    fifty_two_week_high: Optional[float] = Field(None, description="52-week high")
+    fifty_two_week_low: Optional[float] = Field(None, description="52-week low")
+    fifty_two_week_change_percent: Optional[float] = Field(None, description="52-week change percentage")
+    
+    # Fundamental fields
+    sector: Optional[str] = Field(None, description="Business sector")
+    industry: Optional[str] = Field(None, description="Industry")
+    market_cap: Optional[float] = Field(None, description="Market capitalization")
+    pe_ratio: Optional[float] = Field(None, description="Price-to-earnings ratio")
+    forward_pe: Optional[float] = Field(None, description="Forward P/E ratio")
+    price_to_book: Optional[float] = Field(None, description="Price-to-book ratio")
+    
+    # Growth and earnings
+    eps_trailing_twelve_months: Optional[float] = Field(None, description="EPS (trailing 12 months)")
+    eps_forward: Optional[float] = Field(None, description="Forward EPS")
+    eps_current_year: Optional[float] = Field(None, description="EPS current year")
+    earnings_growth: Optional[float] = Field(None, description="Earnings growth rate")
+    
+    # Analyst ratings
+    average_analyst_rating: Optional[str] = Field(None, description="Average analyst rating")
+    
+    # Volume and trading
+    regular_market_volume: Optional[int] = Field(None, description="Regular market volume")
+    average_daily_volume_3_month: Optional[int] = Field(None, description="Average daily volume (3 months)")
 
 class SearchResponse(BaseModel):
     """Schema for search API response"""
@@ -127,6 +159,53 @@ class MarketDataResponse(BaseModel):
     active: List[MarketData] = Field(..., description="Most active stocks")
     last_updated: datetime = Field(..., description="Last update timestamp")
 
+
+class EquityQuery(BaseModel):
+    """Schema for equity query conditions"""
+    operator: str = Field(..., description="Logical operator (e.g., 'and', 'or', 'is-in', 'lt', 'gt', 'eq', 'lte', 'gte')")
+    field: Optional[str] = Field(None, description="Field to filter on (for comparison operators)")
+    value: Optional[Any] = Field(None, description="Value to compare against")
+    conditions: Optional[List['EquityQuery']] = Field(None, description="Nested conditions for logical operators")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "operator": "and",
+                "conditions": [
+                    {"operator": "is-in", "field": "exchange", "value": ["NMS", "NYQ"]},
+                    {"operator": "lt", "field": "epsgrowth.lasttwelvemonths", "value": 15}
+                ]
+            }
+        }
+
+class PredefinedScreener(str, Enum):
+    """Predefined screener options"""
+    AGGRESSIVE_SMALL_CAPS = "aggressive_small_caps"
+    DAY_GAINERS = "day_gainers"
+    DAY_LOSERS = "day_losers"
+    GROWTH_TECHNOLOGY_STOCKS = "growth_technology_stocks"
+    MOST_ACTIVES = "most_actives"
+    MOST_SHORTED_STOCKS = "most_shorted_stocks"
+    SMALL_CAP_GAINERS = "small_cap_gainers"
+    UNDERVALUED_GROWTH_STOCKS = "undervalued_growth_stocks"
+    UNDERVALUED_LARGE_CAPS = "undervalued_large_caps"
+    CONSERVATIVE_FOREIGN_FUNDS = "conservative_foreign_funds"
+    HIGH_YIELD_BOND = "high_yield_bond"
+    PORTFOLIO_ANCHORS = "portfolio_anchors"
+    SOLID_LARGE_GROWTH_FUNDS = "solid_large_growth_funds"
+    SOLID_MIDCAP_GROWTH_FUNDS = "solid_midcap_growth_funds"
+    TOP_MUTUAL_FUNDS = "top_mutual_funds"
+
+class EquityScreenResponse(BaseModel):
+    """Schema for equity screening response"""
+    total: int = Field(..., description="Total number of matching instruments")
+    count: int = Field(..., description="Number of instruments in this page")
+    page: int = Field(..., description="Current page number")
+    page_size: int = Field(..., description="Number of items per page")
+    total_pages: int = Field(..., description="Total number of pages")
+    results: List[SearchResult] = Field(..., description="Matching instruments")
+    query: Optional[Any] = Field(None, description="The query that was executed (if custom query)")
+    screener: Optional[str] = Field(None, description="The predefined screener used (if predefined)")
 
 class HealthCheck(BaseModel):
     """Schema for health check response"""
