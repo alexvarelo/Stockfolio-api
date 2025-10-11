@@ -20,8 +20,8 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 # Copy project
 COPY . .
 
-# Expose port 8000 for FastAPI
-EXPOSE 8000
+# Expose port for Cloud Run (PORT environment variable will be 8080)
+EXPOSE 8080
 
-# Run the FastAPI app with uvicorn
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# Run the FastAPI app with uvicorn using PORT environment variable
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
