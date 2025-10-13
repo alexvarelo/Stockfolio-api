@@ -2,8 +2,11 @@ from pydantic_settings import BaseSettings
 from typing import Optional
 import os
 from dotenv import load_dotenv
+import logging
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 class Settings(BaseSettings):
     """Application settings"""
@@ -24,7 +27,7 @@ class Settings(BaseSettings):
     # Supabase Configuration
     SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
     SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
-    SUPABASE_CLIENTS_TABLE: str = os.getenv("SUPABASE_CLIENTS_TABLE", "api_clients")
+    SUPABASE_CLIENTS_TABLE: str = os.getenv("SUPABASE_CLIENTS_TABLE", "api_credentials")
     
     # CORS Configuration
     BACKEND_CORS_ORIGINS: list = ["*"]
@@ -36,4 +39,13 @@ class Settings(BaseSettings):
         case_sensitive = True
         env_file = ".env"
 
-settings = Settings() 
+# Initialize settings and log configuration
+settings = Settings()
+
+# Log configuration for debugging
+logger.info(f"Settings initialized - DEBUG: {settings.DEBUG}")
+logger.info(f"SUPABASE_URL configured: {bool(settings.SUPABASE_URL)}")
+logger.info(f"SUPABASE_KEY configured: {bool(settings.SUPABASE_KEY)}")
+logger.info(f"SUPABASE_CLIENTS_TABLE: {settings.SUPABASE_CLIENTS_TABLE}")
+logger.info(f"SECRET_KEY configured: {bool(settings.SECRET_KEY)}")
+logger.info(f"ACCESS_TOKEN_EXPIRE_MINUTES: {settings.ACCESS_TOKEN_EXPIRE_MINUTES}") 

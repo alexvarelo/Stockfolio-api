@@ -40,21 +40,26 @@ async def get_token(
     
     Returns a JWT token valid for 10 minutes.
     """
+    logger.info(f"Token request received for client_id: {request.client_id}")
+    logger.info(f"Request data: client_id={request.client_id}, has_secret={bool(request.client_secret)}")
+    
     try:
         token_response = auth_service.authenticate_client(request)
         
         if not token_response:
+            logger.warning(f"Authentication failed for client_id: {request.client_id}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid client credentials"
             )
         
+        logger.info(f"Token generated successfully for client_id: {request.client_id}")
         return token_response
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Token generation error: {str(e)}")
+        logger.error(f"Token generation error for client_id {request.client_id}: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Internal server error"
@@ -83,16 +88,22 @@ async def get_current_client(
     
     This endpoint returns information about the client associated with the provided JWT token.
     """
+    logger.info("Client info request received")
+    logger.info(f"Token prefix: {credentials.scheme}")
+    logger.info(f"Token length: {len(credentials.credentials)}")
+    
     try:
         token = credentials.credentials
         client = auth_service.get_current_client(token)
         
         if not client:
+            logger.warning("Client lookup failed - invalid or expired token")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid or expired token"
             )
         
+        logger.info(f"Client info retrieved for: {client.get('name', 'Unknown')} (ID: {client.get('client_id')})")
         return {
             "client_id": client.get("client_id"),
             "name": client.get("name"),
