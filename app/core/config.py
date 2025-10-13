@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     # Database Configuration
     DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./stockfolio_api.db")
     
+    # Supabase Configuration
+    SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
+    SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
+    SUPABASE_CLIENTS_TABLE: str = os.getenv("SUPABASE_CLIENTS_TABLE", "api_clients")
+    
     # CORS Configuration
     BACKEND_CORS_ORIGINS: list = ["*"]
     

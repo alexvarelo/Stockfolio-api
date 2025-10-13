@@ -58,12 +58,18 @@ async def financial_data_exception_handler(request: Request, exc: FinancialDataE
         ).dict()
     )
 
-# Create database tables on startup
+# Create database tables on startup (legacy - only needed if using local SQLite for other features)
 @app.on_event("startup")
 async def startup_event():
     """Initialize database tables on startup"""
-    create_tables()
-    logger.info("Database tables created successfully")
+    # Note: Authentication now uses Supabase, so local database tables are optional
+    # Only create tables if you need local database for other features
+    try:
+        create_tables()
+        logger.info("Local database tables created successfully (if needed)")
+    except Exception as e:
+        logger.warning(f"Could not create local database tables: {e}")
+        logger.info("This is expected if you're only using Supabase for authentication")
 
 # Include API router
 app.include_router(api_router, prefix=settings.API_V1_STR)

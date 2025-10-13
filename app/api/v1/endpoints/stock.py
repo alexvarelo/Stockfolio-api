@@ -11,7 +11,6 @@ from app.models.schemas import (
 from app.services.yfinance_service import YFinanceService
 from app.core.exceptions import TickerNotFoundError, YFinanceError
 from app.core.dependencies import get_current_client
-from app.models.database import Client
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +40,7 @@ def get_yfinance_service() -> YFinanceService:
 async def get_batch_news(
     request: BatchNewsRequest,
     yfinance_service: YFinanceService = Depends(get_yfinance_service),
-    current_client: Client = Depends(get_current_client)
+    current_client: Dict[str, Any] = Depends(get_current_client)
 ) -> BatchNewsResponse:
     """
     Get news articles for multiple stock tickers.
@@ -128,7 +127,7 @@ async def get_batch_news(
 )
 async def get_market_data(
     yfinance_service: YFinanceService = Depends(get_yfinance_service),
-    current_client: Client = Depends(get_current_client)
+    current_client: Dict[str, Any] = Depends(get_current_client)
 ) -> MarketDataResponse:
     """
     Get market overview data including top gainers, losers, and most active stocks.
@@ -164,7 +163,7 @@ async def get_market_data(
 async def get_stock_info(
     ticker: str = Path(..., description="Stock ticker symbol (e.g., AAPL, MSFT)"),
     yfinance_service: YFinanceService = Depends(get_yfinance_service),
-    current_client: Client = Depends(get_current_client)
+    current_client: Dict[str, Any] = Depends(get_current_client)
 ) -> StockInfo:
     """
     Get comprehensive information about a stock.
@@ -211,7 +210,7 @@ async def get_stock_info(
 async def get_stock_price(
     ticker: str = Path(..., description="Stock ticker symbol"),
     yfinance_service: YFinanceService = Depends(get_yfinance_service),
-    current_client: Client = Depends(get_current_client)
+    current_client: Dict[str, Any] = Depends(get_current_client)
 ) -> PriceData:
     """
     Get current price data for a stock (single ticker).
@@ -247,7 +246,7 @@ async def get_stock_price(
 async def get_multiple_stock_prices(
     tickers: str,
     yfinance_service: YFinanceService = Depends(get_yfinance_service),
-    current_client: Client = Depends(get_current_client)
+    current_client: Dict[str, Any] = Depends(get_current_client)
 ) -> list[PriceData]:
     """
     Get current price data for multiple stocks.
@@ -287,7 +286,7 @@ async def get_multiple_stock_prices(
 async def get_company_info(
     ticker: str = Path(..., description="Stock ticker symbol"),
     yfinance_service: YFinanceService = Depends(get_yfinance_service),
-    current_client: Client = Depends(get_current_client)
+    current_client: Dict[str, Any] = Depends(get_current_client)
 ) -> CompanyInfo:
     """
     Get company information for a stock.
@@ -338,7 +337,7 @@ async def get_historical_data(
     ticker: str = Path(..., description="Stock ticker symbol"),
     period: str = Query("1y", description="Time period (1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, max)"),
     yfinance_service: YFinanceService = Depends(get_yfinance_service),
-    current_client: Client = Depends(get_current_client)
+    current_client: Dict[str, Any] = Depends(get_current_client)
 ) -> HistoricalDataResponse:
     """
     Get historical price data for a stock.

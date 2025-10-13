@@ -9,7 +9,6 @@ from app.models.schemas import (
 from app.services.search_service import SearchService
 from app.core.exceptions import SearchError
 from app.core.dependencies import get_current_client
-from app.models.database import Client
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +118,7 @@ async def screen_equities(
     page: int = Query(1, description="Page number (1-indexed)", ge=1),
     page_size: int = Query(20, description="Number of results per page", ge=1, le=100),
     search_service: SearchService = Depends(get_search_service),
-    current_client: Client = Depends(get_current_client)
+    current_client: Dict[str, Any] = Depends(get_current_client)
 ) -> EquityScreenResponse:
     """
     Screen for stocks and other financial instruments based on complex filtering criteria.
@@ -191,7 +190,7 @@ async def screen_predefined(
     page: int = Query(1, description="Page number (1-indexed)", ge=1),
     page_size: int = Query(20, description="Number of results per page", ge=1, le=100),
     search_service: SearchService = Depends(get_search_service),
-    current_client: Client = Depends(get_current_client)
+    current_client: Dict[str, Any] = Depends(get_current_client)
 ) -> EquityScreenResponse:
     """
     Use predefined screeners to find stocks based on common criteria.
@@ -243,7 +242,7 @@ async def search_instruments(
     query: str = Query(..., description="Search query (name, ISIN, or ticker symbol)", min_length=2),
     limit: int = Query(20, description="Maximum number of results to return", ge=1, le=100),
     search_service: SearchService = Depends(get_search_service),
-    current_client: Client = Depends(get_current_client)
+    current_client: Dict[str, Any] = Depends(get_current_client)
 ) -> SearchResponse:
     """
     Search for financial instruments by name, ISIN, or ticker symbol.
@@ -290,7 +289,7 @@ async def search_instruments(
 )
 async def get_popular_stocks(
     search_service: SearchService = Depends(get_search_service),
-    current_client: Client = Depends(get_current_client)
+    current_client: Dict[str, Any] = Depends(get_current_client)
 ) -> List[SearchResult]:
     """
     Get a list of popular and widely traded stocks.
@@ -318,7 +317,7 @@ async def get_popular_stocks(
 async def search_by_isin(
     isin: str,
     search_service: SearchService = Depends(get_search_service),
-    current_client: Client = Depends(get_current_client)
+    current_client: Dict[str, Any] = Depends(get_current_client)
 ) -> SearchResult:
     """
     Search for a financial instrument by its ISIN (International Securities Identification Number).

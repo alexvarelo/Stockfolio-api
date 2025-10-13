@@ -1,31 +1,27 @@
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy.orm import Session
-from typing import Optional
+from typing import Optional, Dict, Any
 
-from app.core.database import get_db
-from app.services.auth_service import AuthService
-from app.models.database import Client
+from app.services.supabase_auth_service import SupabaseAuthService
 
 security = HTTPBearer()
 
-def get_auth_service() -> AuthService:
-    """Dependency to get auth service instance"""
-    return AuthService()
+def get_auth_service() -> SupabaseAuthService:
+    """Dependency to get Supabase auth service instance"""
+    return SupabaseAuthService()
 
 def get_current_client(
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: Session = Depends(get_db),
-    auth_service: AuthService = Depends(get_auth_service)
-) -> Client:
+    auth_service: SupabaseAuthService = Depends(get_auth_service)
+) -> Dict[str, Any]:
     """
     Dependency to get the current authenticated client.
     
-    This dependency verifies the JWT token and returns the associated client.
+    This dependency verifies the JWT token and returns the associated client data.
     Use this to protect endpoints that require authentication.
     """
     token = credentials.credentials
-    client = auth_service.get_current_client(db, token)
+    client = auth_service.get_current_client(token)
     
     if not client:
         raise HTTPException(
