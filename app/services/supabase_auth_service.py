@@ -85,7 +85,9 @@ class SupabaseAuthService:
             
             # Try to verify as hashed password first
             try:
-                if pwd_context.verify(client_secret, stored_secret):
+                # Truncate password if it's too long for bcrypt (bcrypt limit is 72 bytes)
+                truncated_secret = client_secret[:72] if len(client_secret) > 72 else client_secret
+                if pwd_context.verify(truncated_secret, stored_secret):
                     logger.info(f"Client {client_id} authenticated successfully using hashed password")
                     return client
             except Exception as e:
