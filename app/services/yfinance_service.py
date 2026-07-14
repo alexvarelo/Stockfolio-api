@@ -3,7 +3,9 @@ from typing import Optional, Dict, Any, List
 import pandas as pd
 from datetime import datetime
 import logging
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from app.core.exceptions import TickerNotFoundError, YFinanceError
 from app.models.schemas import PriceData, CompanyInfo, StockInfo, HistoricalDataResponse, HistoricalDataPoint, MarketData, MarketDataResponse
@@ -12,12 +14,27 @@ logger = logging.getLogger(__name__)
 
 class YFinanceService:
     """Service class for handling yfinance operations"""
-    
+
     def __init__(self):
         self.cache = {}
+        self._cache_lock = threading.Lock()
         self.last_request_time = 0
         self.min_request_interval = 3.0  # Increased to 3 seconds between requests
         self.cache_duration = 300  # Cache for 5 minutes
+        self.price_cache_duration = 30  # Prices go stale quickly; cache for 30 seconds
+        self.max_price_workers = 8
+
+    def _cache_get(self, key: str, max_age: float) -> Optional[Any]:
+        """Return a cached value if it is younger than max_age seconds"""
+        with self._cache_lock:
+            entry = self.cache.get(key)
+            if entry and time.time() - entry['timestamp'] < max_age:
+                return entry['value']
+        return None
+
+    def _cache_set(self, key: str, value: Any) -> None:
+        with self._cache_lock:
+            self.cache[key] = {'value': value, 'timestamp': time.time()}
 
     def _rate_limit(self):
         """Implement rate limiting to avoid Yahoo Finance restrictions"""
@@ -36,13 +53,11 @@ class YFinanceService:
         
         # Check cache first
         cache_key = f"ticker_{symbol_upper}"
-        current_time = time.time()
-        
-        if cache_key in self.cache:
-            cached_data = self.cache[cache_key]
-            if current_time - cached_data['timestamp'] < self.cache_duration:
-                logger.debug(f"Using cached data for {symbol_upper}")
-                return cached_data['ticker']
+
+        cached = self._cache_get(cache_key, self.cache_duration)
+        if cached is not None:
+            logger.debug(f"Using cached data for {symbol_upper}")
+            return cached
         
         max_retries = 3
         retry_delay = 5.0
@@ -57,11 +72,8 @@ class YFinanceService:
                     raise TickerNotFoundError(symbol)
                 
                 # Cache the successful result
-                self.cache[cache_key] = {
-                    'ticker': ticker,
-                    'timestamp': current_time
-                }
-                
+                self._cache_set(cache_key, ticker)
+
                 return ticker
             except Exception as e:
                 error_str = str(e)
@@ -305,6 +317,91 @@ class YFinanceService:
             logger.error(f"Error getting price data for {symbol}: {str(e)}")
             raise YFinanceError("get_price_data", str(e))
     
+    def get_price_data_fast(self, symbol: str) -> PriceData:
+        """
+        Get current price data using yfinance fast_info.
+
+        Much faster than get_price_data because it avoids the full quoteSummary
+        scrape behind Ticker.info, and skips the global request throttle.
+        Trade-off: pe_ratio and dividend_yield are not available via fast_info.
+        Results are cached for price_cache_duration seconds.
+        """
+        symbol_upper = symbol.upper()
+        cache_key = f"price_{symbol_upper}"
+
+        cached = self._cache_get(cache_key, self.price_cache_duration)
+        if cached is not None:
+            return cached
+
+        try:
+            fast_info = yf.Ticker(symbol_upper).fast_info
+            current_price = fast_info.last_price
+            if current_price is None:
+                raise TickerNotFoundError(symbol_upper)
+
+            previous_close = fast_info.previous_close
+            change = None
+            change_percent = None
+            if current_price is not None and previous_close:
+                change = current_price - previous_close
+                change_percent = (change / previous_close) * 100
+
+            last_volume = fast_info.last_volume
+            price_data = PriceData(
+                symbol=symbol_upper,
+                current_price=current_price,
+                previous_close=previous_close,
+                open=fast_info.open,
+                high=fast_info.day_high,
+                low=fast_info.day_low,
+                volume=int(last_volume) if last_volume else None,
+                market_cap=fast_info.market_cap,
+                pe_ratio=None,
+                dividend_yield=None,
+                change=change,
+                change_percent=change_percent,
+                last_updated=datetime.now()
+            )
+
+            self._cache_set(cache_key, price_data)
+            return price_data
+
+        except TickerNotFoundError:
+            raise
+        except (KeyError, AttributeError):
+            raise TickerNotFoundError(symbol_upper)
+        except Exception as e:
+            logger.error(f"Error getting fast price data for {symbol}: {str(e)}")
+            raise YFinanceError("get_price_data_fast", str(e))
+
+    def get_multiple_price_data(self, symbols: List[str]) -> List[PriceData]:
+        """
+        Get current price data for multiple tickers concurrently.
+
+        Fetches all tickers in parallel using fast_info, so a 20-holding
+        portfolio takes roughly the time of a single request instead of
+        20 sequential throttled requests. Failed tickers are omitted.
+        """
+        unique_symbols = list(dict.fromkeys(s.upper() for s in symbols))
+        results: Dict[str, PriceData] = {}
+
+        with ThreadPoolExecutor(max_workers=min(self.max_price_workers, len(unique_symbols))) as executor:
+            futures = {
+                executor.submit(self.get_price_data_fast, symbol): symbol
+                for symbol in unique_symbols
+            }
+            for future in as_completed(futures):
+                symbol = futures[future]
+                try:
+                    results[symbol] = future.result()
+                except (TickerNotFoundError, YFinanceError) as e:
+                    logger.warning(f"Skipping {symbol} in batch price request: {str(e)}")
+                except Exception as e:
+                    logger.error(f"Unexpected error fetching {symbol} in batch: {str(e)}")
+
+        # Preserve the order the symbols were requested in
+        return [results[s] for s in unique_symbols if s in results]
+
     def get_company_info(self, symbol: str) -> CompanyInfo:
         """Get company information for a stock"""
         try:
@@ -340,84 +437,57 @@ class YFinanceService:
             logger.error(f"Error getting historical data for {symbol}: {str(e)}")
             raise YFinanceError("get_historical_data", str(e))
             
+    def _screen_market_movers(self, screener_key: str, count: int = 25) -> List[MarketData]:
+        """Run a predefined yfinance screener and map the quotes to MarketData"""
+        response = yf.screen(screener_key, count=count)
+        quotes = response.get('quotes', []) if isinstance(response, dict) else []
+
+        movers = []
+        for quote in quotes:
+            symbol = quote.get('symbol')
+            if not symbol:
+                continue
+            movers.append(MarketData(
+                symbol=symbol,
+                name=quote.get('shortName') or quote.get('longName') or '',
+                price=quote.get('regularMarketPrice'),
+                change=quote.get('regularMarketChange'),
+                change_percent=quote.get('regularMarketChangePercent'),
+                volume=quote.get('regularMarketVolume'),
+                market_cap=quote.get('marketCap'),
+                pe_ratio=quote.get('trailingPE')
+            ))
+        return movers
+
     def get_market_data(self) -> MarketDataResponse:
         """Get market data including top gainers, losers, and most active stocks"""
         cache_key = "market_data"
-        current_time = time.time()
-        
-        # Check cache first
-        if cache_key in self.cache:
-            cached_data = self.cache[cache_key]
-            if current_time - cached_data['timestamp'] < self.cache_duration:
-                logger.debug("Using cached market data")
-                return cached_data['data']
-        
+
+        cached = self._cache_get(cache_key, self.cache_duration)
+        if cached is not None:
+            logger.debug("Using cached market data")
+            return cached
+
         try:
             self._rate_limit()
-            
-            # Initialize Market with 'us_market' parameter
-            market = yf.Market('us_market')
-            
-            # Get top gainers
-            gainers = market.get_top_gainers()
-            gainers_data = [
-                MarketData(
-                    symbol=row['symbol'],
-                    name=row.get('shortName', ''),
-                    price=row.get('regularMarketPrice'),
-                    change=row.get('regularMarketChange'),
-                    change_percent=row.get('regularMarketChangePercent'),
-                    volume=row.get('regularMarketVolume'),
-                    market_cap=row.get('marketCap'),
-                    pe_ratio=row.get('trailingPE')
-                ) for _, row in gainers.iterrows()
-            ]
-            
-            # Get top losers
-            losers = market.get_top_losers()
-            losers_data = [
-                MarketData(
-                    symbol=row['symbol'],
-                    name=row.get('shortName', ''),
-                    price=row.get('regularMarketPrice'),
-                    change=row.get('regularMarketChange'),
-                    change_percent=row.get('regularMarketChangePercent'),
-                    volume=row.get('regularMarketVolume'),
-                    market_cap=row.get('marketCap'),
-                    pe_ratio=row.get('trailingPE')
-                ) for _, row in losers.iterrows()
-            ]
-            
-            # Get most active stocks
-            active = market.get_most_active()
-            active_data = [
-                MarketData(
-                    symbol=row['symbol'],
-                    name=row.get('shortName', ''),
-                    price=row.get('regularMarketPrice'),
-                    change=row.get('regularMarketChange'),
-                    change_percent=row.get('regularMarketChangePercent'),
-                    volume=row.get('regularMarketVolume'),
-                    market_cap=row.get('marketCap'),
-                    pe_ratio=row.get('trailingPE')
-                ) for _, row in active.iterrows()
-            ]
-            
+
+            # yf.Market no longer exposes get_top_gainers/losers/most_active;
+            # the predefined screeners are the supported replacement.
             response = MarketDataResponse(
-                gainers=gainers_data,
-                losers=losers_data,
-                active=active_data,
+                gainers=self._screen_market_movers('day_gainers'),
+                losers=self._screen_market_movers('day_losers'),
+                active=self._screen_market_movers('most_actives'),
                 last_updated=datetime.now()
             )
-            
-            # Cache the result
-            self.cache[cache_key] = {
-                'data': response,
-                'timestamp': current_time
-            }
-            
+
+            self._cache_set(cache_key, response)
             return response
-            
+
         except Exception as e:
             logger.error(f"Error getting market data: {str(e)}")
             raise YFinanceError("get_market_data", str(e))
+
+
+# Module-level singleton. The service was previously instantiated per request,
+# which made the cache useless and re-applied the rate-limit delay on every call.
+yfinance_service_singleton = YFinanceService()

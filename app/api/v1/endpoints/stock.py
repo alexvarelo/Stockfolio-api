@@ -8,7 +8,7 @@ from app.models.schemas import (
     HistoricalDataPoint, MarketDataResponse, BatchNewsRequest, BatchNewsResponse, 
     TickerNews, NewsArticle
 )
-from app.services.yfinance_service import YFinanceService
+from app.services.yfinance_service import YFinanceService, yfinance_service_singleton
 from app.core.exceptions import TickerNotFoundError, YFinanceError
 from app.core.dependencies import get_current_client
 
@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 def get_yfinance_service() -> YFinanceService:
-    """Dependency to get yfinance service instance"""
-    return YFinanceService()
+    """Dependency to get the shared yfinance service instance (shared cache)"""
+    return yfinance_service_singleton
 
 @router.post(
     "/news/batch",
@@ -37,7 +37,7 @@ def get_yfinance_service() -> YFinanceService:
         503: {"model": ErrorResponse, "description": "YFinance service unavailable"}
     }
 )
-async def get_batch_news(
+def get_batch_news(
     request: BatchNewsRequest,
     yfinance_service: YFinanceService = Depends(get_yfinance_service),
     current_client: Dict[str, Any] = Depends(get_current_client)
@@ -125,7 +125,7 @@ async def get_batch_news(
         503: {"model": ErrorResponse, "description": "YFinance service unavailable"}
     }
 )
-async def get_market_data(
+def get_market_data(
     yfinance_service: YFinanceService = Depends(get_yfinance_service),
     current_client: Dict[str, Any] = Depends(get_current_client)
 ) -> MarketDataResponse:
@@ -160,7 +160,7 @@ async def get_market_data(
         503: {"model": ErrorResponse, "description": "YFinance service unavailable"}
     }
 )
-async def get_stock_info(
+def get_stock_info(
     ticker: str = Path(..., description="Stock ticker symbol (e.g., AAPL, MSFT)"),
     yfinance_service: YFinanceService = Depends(get_yfinance_service),
     current_client: Dict[str, Any] = Depends(get_current_client)
@@ -207,7 +207,7 @@ async def get_stock_info(
         503: {"model": ErrorResponse, "description": "YFinance service unavailable"}
     }
 )
-async def get_stock_price(
+def get_stock_price(
     ticker: str = Path(..., description="Stock ticker symbol"),
     yfinance_service: YFinanceService = Depends(get_yfinance_service),
     current_client: Dict[str, Any] = Depends(get_current_client)
@@ -243,32 +243,28 @@ async def get_stock_price(
         503: {"model": ErrorResponse, "description": "YFinance service unavailable"}
     }
 )
-async def get_multiple_stock_prices(
+def get_multiple_stock_prices(
     tickers: str,
     yfinance_service: YFinanceService = Depends(get_yfinance_service),
     current_client: Dict[str, Any] = Depends(get_current_client)
 ) -> list[PriceData]:
     """
     Get current price data for multiple stocks.
+
+    Tickers are fetched concurrently via fast_info, so response time stays
+    close to a single-ticker request even for large portfolios. Note that
+    pe_ratio and dividend_yield are not available on this batch endpoint.
     """
     tickers_list = [ticker.strip() for ticker in tickers.split(",") if ticker.strip()]
     logger.info(f"Received request for multiple stock prices: {tickers_list}")
     if not tickers_list:
         logger.warning("No tickers provided or invalid tickers parameter.")
         raise HTTPException(status_code=400, detail="At least one ticker symbol is required")
-    results = []
-    for ticker in tickers_list:
-        try:
-            logger.info(f"Fetching price data for ticker: {ticker}")
-            price = yfinance_service.get_price_data(ticker.upper())
-            logger.info(f"Successfully fetched price data for {ticker}: {price}")
-            results.append(price)
-        except (TickerNotFoundError, YFinanceError) as e:
-            logger.warning(f"Failed to get price for {ticker}: {str(e)}")
-            continue
-        except Exception as e:
-            logger.error(f"Unexpected error getting price data for {ticker}: {str(e)}", exc_info=True)
-            continue
+    try:
+        results = yfinance_service.get_multiple_price_data(tickers_list)
+    except Exception as e:
+        logger.error(f"Unexpected error getting batch price data: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=503, detail={"error": "Failed to fetch price data", "detail": str(e)})
     logger.info(f"Returning price data for {len(results)} tickers out of {len(tickers_list)} requested.")
     return results
 
@@ -283,7 +279,7 @@ async def get_multiple_stock_prices(
         503: {"model": ErrorResponse, "description": "YFinance service unavailable"}
     }
 )
-async def get_company_info(
+def get_company_info(
     ticker: str = Path(..., description="Stock ticker symbol"),
     yfinance_service: YFinanceService = Depends(get_yfinance_service),
     current_client: Dict[str, Any] = Depends(get_current_client)
@@ -333,7 +329,7 @@ async def get_company_info(
         503: {"model": ErrorResponse, "description": "YFinance service unavailable"}
     }
 )
-async def get_historical_data(
+def get_historical_data(
     ticker: str = Path(..., description="Stock ticker symbol"),
     period: str = Query("1y", description="Time period (1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, max)"),
     yfinance_service: YFinanceService = Depends(get_yfinance_service),
