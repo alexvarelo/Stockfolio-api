@@ -33,4 +33,12 @@ class YFinanceError(FinancialDataException):
         super().__init__(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"YFinance {operation} failed: {error}"
+        )
+
+class PredictionError(FinancialDataException):
+    """Raised when prediction operation fails"""
+    def __init__(self, operation: str, error: str):
+        super().__init__(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Prediction {operation} failed: {error}"
         ) 

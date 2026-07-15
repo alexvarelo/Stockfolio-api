@@ -257,7 +257,222 @@ curl "http://localhost:8000/api/v1/stock/AAPL/history?period=1mo"
 }
 ```
 
-### 3. Utility Endpoints
+### 3. Prediction Endpoints
+
+#### Single Day Stock Price Prediction
+
+**Endpoint:** `POST /api/v1/predictions/predict/single`
+
+**Description:** Predict stock price for a specific number of days ahead with uncertainty estimates.
+
+**Parameters:**
+- `symbol` (required): Stock ticker symbol (e.g., AAPL, GOOGL)
+- `days_ahead` (optional): Number of days to predict ahead (1-30, default: 1)
+- `include_uncertainty` (optional): Whether to include confidence intervals (default: true)
+
+**Example Request:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/predictions/predict/single" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "symbol": "AAPL",
+    "days_ahead": 1,
+    "include_uncertainty": true
+  }'
+```
+
+**Example Response:**
+```json
+{
+  "symbol": "AAPL",
+  "current_price": 150.25,
+  "predicted_price": 152.80,
+  "days_ahead": 1,
+  "expected_return_pct": 1.70,
+  "prediction_date": "2024-01-16T10:30:00",
+  "confidence_interval": {
+    "lower_95": 148.50,
+    "upper_95": 157.10,
+    "lower_68": 150.65,
+    "upper_68": 154.95
+  },
+  "model_info": {
+    "model_type": "LSTM",
+    "features_used": 28,
+    "sequence_length": 60
+  },
+  "timestamp": "2024-01-15T10:30:00"
+}
+```
+
+#### Multi-Day Stock Price Prediction
+
+**Endpoint:** `POST /api/v1/predictions/predict/multi-day`
+
+**Description:** Predict stock prices for multiple days ahead using recursive prediction.
+
+**Parameters:**
+- `symbol` (required): Stock ticker symbol
+- `days_ahead` (optional): Number of days to predict ahead (1-30, default: 5)
+- `include_uncertainty` (optional): Whether to include uncertainty estimates (default: true)
+
+**Example Request:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/predictions/predict/multi-day" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "symbol": "AAPL",
+    "days_ahead": 5,
+    "include_uncertainty": true
+  }'
+```
+
+**Example Response:**
+```json
+{
+  "symbol": "AAPL",
+  "current_price": 150.25,
+  "predictions": [
+    {
+      "date": "2024-01-16T10:30:00",
+      "predicted_price": 152.80,
+      "uncertainty": 2.15,
+      "expected_return_pct": 1.70
+    },
+    {
+      "date": "2024-01-17T10:30:00",
+      "predicted_price": 153.45,
+      "uncertainty": 2.80,
+      "expected_return_pct": 2.13
+    }
+  ],
+  "summary": {
+    "total_return_pct": 2.13,
+    "avg_daily_return_pct": 0.43,
+    "volatility_estimate": 2.48
+  },
+  "model_info": {
+    "model_type": "LSTM",
+    "prediction_method": "recursive",
+    "days_predicted": 5
+  },
+  "timestamp": "2024-01-15T10:30:00"
+}
+```
+
+#### Batch Stock Prediction
+
+**Endpoint:** `POST /api/v1/predictions/predict/batch`
+
+**Description:** Make predictions for multiple stocks in parallel.
+
+**Parameters:**
+- `symbols` (required): List of stock ticker symbols
+- `prediction_type` (optional): "single" for single day, "multi" for multi-day (default: "single")
+- `days_ahead` (optional): Number of days to predict ahead (1-30, default: 1)
+
+**Example Request:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/predictions/predict/batch" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "symbols": ["AAPL", "GOOGL", "MSFT"],
+    "prediction_type": "single",
+    "days_ahead": 1
+  }'
+```
+
+**Example Response:**
+```json
+[
+  {
+    "symbol": "AAPL",
+    "current_price": 150.25,
+    "predicted_price": 152.80,
+    "expected_return_pct": 1.70,
+    "timestamp": "2024-01-15T10:30:00"
+  },
+  {
+    "symbol": "GOOGL",
+    "current_price": 145.60,
+    "predicted_price": 147.20,
+    "expected_return_pct": 1.10,
+    "timestamp": "2024-01-15T10:30:00"
+  }
+]
+```
+
+#### Quick Prediction (GET)
+
+**Endpoint:** `GET /api/v1/predictions/predict/{symbol}`
+
+**Description:** Quick single-day prediction using path parameter.
+
+**Parameters:**
+- `symbol` (path): Stock ticker symbol
+- `days_ahead` (query): Number of days to predict ahead (1-30, default: 1)
+- `include_uncertainty` (query): Include confidence intervals (default: true)
+
+**Example Request:**
+```bash
+curl "http://localhost:8000/api/v1/predictions/predict/AAPL?days_ahead=1"
+```
+
+#### Load Prediction Model
+
+**Endpoint:** `POST /api/v1/predictions/model/load`
+
+**Description:** Load a pre-trained prediction model from storage.
+
+**Parameters:**
+- `model_path` (query): Path to the directory containing the trained model files
+
+**Example Request:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/predictions/model/load?model_path=models/stock_predictor_20240115"
+```
+
+**Example Response:**
+```json
+{
+  "status": "success",
+  "message": "Model loaded successfully from models/stock_predictor_20240115",
+  "timestamp": "2024-01-15T10:30:00"
+}
+```
+
+#### Get Model Information
+
+**Endpoint:** `GET /api/v1/predictions/model/info`
+
+**Description:** Get information about the currently loaded prediction model.
+
+**Example Request:**
+```bash
+curl "http://localhost:8000/api/v1/predictions/model/info"
+```
+
+**Example Response:**
+```json
+{
+  "model_type": "LSTM",
+  "model_params": {
+    "input_size": 28,
+    "hidden_size": 50,
+    "num_layers": 2,
+    "dropout": 0.2,
+    "output_size": 1
+  },
+  "preprocessor_info": {
+    "sequence_length": 60,
+    "is_fitted": true
+  },
+  "device": "cpu",
+  "model_path": "models/stock_predictor_20240115"
+}
+```
+
+### 4. Utility Endpoints
 
 #### Health Check
 
