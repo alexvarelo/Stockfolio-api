@@ -247,6 +247,7 @@ class YFinanceService:
             # Extract price data
             price_data = PriceData(
                 symbol=symbol.upper(),
+                currency=info.get('currency'),
                 current_price=info.get('regularMarketPrice'),
                 previous_close=info.get('previousClose'),
                 open=info.get('open'),
@@ -260,7 +261,7 @@ class YFinanceService:
                 change_percent=info.get('regularMarketChangePercent'),
                 last_updated=datetime.now()
             )
-            
+
             # Extract company info
             company_info = CompanyInfo(
                 symbol=symbol.upper(),
@@ -297,6 +298,7 @@ class YFinanceService:
             
             return PriceData(
                 symbol=symbol.upper(),
+                currency=info.get('currency'),
                 current_price=info.get('regularMarketPrice'),
                 previous_close=info.get('previousClose'),
                 open=info.get('open'),
@@ -310,7 +312,7 @@ class YFinanceService:
                 change_percent=info.get('regularMarketChangePercent'),
                 last_updated=datetime.now()
             )
-            
+
         except (TickerNotFoundError, YFinanceError):
             raise
         except Exception as e:
@@ -349,6 +351,7 @@ class YFinanceService:
             last_volume = fast_info.last_volume
             price_data = PriceData(
                 symbol=symbol_upper,
+                currency=fast_info.currency,
                 current_price=current_price,
                 previous_close=previous_close,
                 open=fast_info.open,

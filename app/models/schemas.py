@@ -53,6 +53,7 @@ class SearchResponse(BaseModel):
 class PriceData(BaseModel):
     """Schema for stock price data"""
     symbol: str = Field(..., description="Stock ticker symbol")
+    currency: Optional[str] = Field(None, description="Currency the price is denominated in, e.g. USD, EUR")
     current_price: Optional[float] = Field(None, description="Current stock price")
     previous_close: Optional[float] = Field(None, description="Previous closing price")
     open: Optional[float] = Field(None, description="Opening price")
