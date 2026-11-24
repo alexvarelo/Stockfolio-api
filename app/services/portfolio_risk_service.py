@@ -23,6 +23,11 @@ SUFFIX_CURRENCY = {
 }
 
 
+def fx_code(c: str) -> str:
+    """Currency code used for FX lookups (pence -> GBP)."""
+    return "GBP" if c in PENCE else c
+
+
 def infer_currency(ticker: str, service) -> Optional[str]:
     """yfinance's quote currency first (a .L ETF may trade in USD), then the exchange
     suffix; no-suffix tickers default to USD. None if unknown."""
@@ -104,8 +109,7 @@ def compute_portfolio_risk(req: PortfolioRiskRequest, service) -> PortfolioRiskR
     except Exception as e:
         logger.warning(f"No benchmark data for {req.benchmark}: {e}")
 
-    def code(c: str) -> str:
-        return "GBP" if c in PENCE else c
+    code = fx_code
 
     # FX series, one per distinct non-base currency
     needed = {code(c) for c in currency.values()}
