@@ -44,16 +44,42 @@ def test_dca_constant_price():
     assert len(res["trades"]) == 12
 
 
-def test_dca_benchmark_has_same_flows_and_values():
+def test_dca_benchmark_is_lump_sum_and_differs():
     rng = np.random.default_rng(1)
     prices = pd.DataFrame({"A": 100 * np.cumprod(1 + rng.normal(0, 0.01, len(IDX))),
                            "B": 50 * np.cumprod(1 + rng.normal(0, 0.01, len(IDX)))}, index=IDX)
     res = run(prices, "dca", {"A": 0.6, "B": 0.4}, initial_capital=500.0, monthly_amount=100.0)
-    assert np.allclose(res["sim"]["invested"], res["bench"]["invested"])
-    assert np.allclose(res["sim"]["flows"], res["bench"]["flows"])
-    assert res["sim"]["invested"][-1] == pytest.approx(500 + 12 * 100)
-    # DCA at weights is itself buy-and-hold of each contribution, so identical
-    assert np.allclose(res["sim"]["values"], res["bench"]["values"])
+    total = 500 + 12 * 100
+    assert res["sim"]["invested"][-1] == pytest.approx(total)
+    assert res["sim"]["invested"][0] == pytest.approx(600)          # strategy curve unchanged
+    # benchmark = lump sum of everything on day 0 at the same weights
+    assert res["bench"]["invested"][0] == pytest.approx(total)
+    assert res["bench"]["invested"][-1] == pytest.approx(total)
+    assert res["bench"]["flows"][0] == pytest.approx(total) and res["bench"]["flows"][1:].sum() == 0
+    assert res["bench"]["values"][0] == pytest.approx(total)
+    expect = total * (0.6 * prices["A"] / prices["A"].iloc[0] + 0.4 * prices["B"] / prices["B"].iloc[0])
+    assert np.allclose(res["bench"]["values"], expect.to_numpy())
+    assert not np.allclose(res["sim"]["values"], res["bench"]["values"])
+    assert res["metrics"]["strategy"]["total_invested"] == pytest.approx(res["metrics"]["benchmark"]["total_invested"])
+
+
+def test_dca_lump_sum_benchmark_pays_fees_once():
+    prices = pd.DataFrame({"A": const(100)})
+    res = run(prices, "dca", {"A": 1.0}, initial_capital=0.0, monthly_amount=100.0, fee_bps=100)
+    assert res["bench"]["values"][-1] == pytest.approx(1200 / 1.01)
+
+
+def test_signals_use_local_currency_not_fx():
+    # constant local price but a drifting FX rate: base prices trend, local prices do not
+    idx = pd.bdate_range("2020-01-01", periods=150)
+    base_px = pd.Series(100.0 * np.exp(np.concatenate([np.linspace(1, 0, 60), np.linspace(0, 1, 90)])), index=idx)
+    local_px = pd.Series(100.0, index=idx)
+    prices = pd.DataFrame({"A": base_px})
+    kw = dict(initial_capital=1000.0, fast=5, slow=20)
+    with_base = bt.run_backtest(prices, "ma_cross", {"A": 1.0}, idx[0], idx[-1], **kw)
+    with_local = bt.run_backtest(prices, "ma_cross", {"A": 1.0}, idx[0], idx[-1], signal_prices=local_px, **kw)
+    assert with_base["trades"]                      # FX trend alone would trigger a buy
+    assert with_local["trades"] == []
 
 
 def test_rebalance_hand_computed():
@@ -301,6 +327,37 @@ def test_history_starting_after_start_date_is_422(client):
     app.dependency_overrides[get_yfinance_service] = lambda: svc
     r = client.post("/api/v1/strategies/backtest", json=body)
     assert r.status_code == 422 and "B" in r.json()["detail"]
+
+
+def test_fx_not_covering_start_date_has_own_message(client):
+    short_fx = pd.Series(1.1, index=LONG[300:])
+    svc = FakeService({"A": A, "B": B, "EURUSD=X": short_fx}, {"B": "EUR"})
+    app.dependency_overrides[get_yfinance_service] = lambda: svc
+    r = client.post("/api/v1/strategies/backtest", json=BASE)
+    assert r.status_code == 422
+    assert "FX series EUR->USD does not cover" in r.json()["detail"]
+
+
+def test_warmup_days():
+    from app.services.backtest_service import warmup_days
+    assert warmup_days(200) == 300 and warmup_days(50) == 210 and warmup_days(600) == 900
+
+
+@pytest.mark.parametrize("patch", [
+    {"initial_capital": 1e308},
+    {"initial_capital": 2e9},
+    {"params": {"monthly_amount": 1e300}},
+    {"base_currency": "XYZ"},
+])
+def test_unbounded_inputs_are_422(client, patch):
+    r = client.post("/api/v1/strategies/backtest", json={**BASE, **patch})
+    assert r.status_code == 422, r.text
+
+
+def test_max_amounts_still_ok(client):
+    r = client.post("/api/v1/strategies/backtest", json={**BASE, "initial_capital": 1e9,
+                                                         "params": {"monthly_amount": 1e9}})
+    assert r.status_code == 200
 
 
 def test_requires_auth():

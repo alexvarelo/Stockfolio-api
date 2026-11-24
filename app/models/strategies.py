@@ -4,7 +4,7 @@ from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.models.schemas import TICKER_PATTERN
+from app.models.schemas import MAX_MONEY, TICKER_PATTERN, check_base_currency
 
 Strategy = Literal["dca", "rebalance", "rsi", "ma_cross"]
 MIN_START = _date(2000, 1, 1)
@@ -22,7 +22,7 @@ class BacktestTicker(BaseModel):
 
 
 class BacktestParams(BaseModel):
-    monthly_amount: float = Field(0.0, ge=0, description="dca: amount invested on the first trading day of each month")
+    monthly_amount: float = Field(0.0, ge=0, le=MAX_MONEY, description="dca: amount invested on the first trading day of each month")
     rebalance_frequency: Literal["monthly", "quarterly", "yearly"] = "quarterly"
     rsi_buy: float = Field(30.0, gt=0, lt=100, description="rsi: buy when RSI(14) crosses below this level")
     rsi_sell: float = Field(70.0, gt=0, lt=100, description="rsi: sell when RSI(14) crosses above this level")
@@ -35,7 +35,7 @@ class BacktestRequest(BaseModel):
     tickers: List[BacktestTicker] = Field(..., min_length=1, max_length=15)
     start_date: _date
     end_date: _date
-    initial_capital: float = Field(0.0, ge=0)
+    initial_capital: float = Field(0.0, ge=0, le=MAX_MONEY)
     base_currency: str = Field("USD", pattern=r"^[A-Za-z]{3}$")
     params: BacktestParams = Field(default_factory=BacktestParams)
     fee_bps: float = Field(0.0, ge=0, le=100, description="Fee per trade in basis points of traded notional")
@@ -43,7 +43,7 @@ class BacktestRequest(BaseModel):
     @field_validator("base_currency")
     @classmethod
     def _upper_currency(cls, v: str) -> str:
-        return v.upper()
+        return check_base_currency(v)
 
     @model_validator(mode="after")
     def _check(self):
