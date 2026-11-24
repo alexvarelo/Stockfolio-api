@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import search, stock, auth, stream, portfolio
+from app.api.v1.endpoints import search, stock, auth, stream, portfolio, technicals
 
 api_router = APIRouter()
 
@@ -10,3 +10,4 @@ api_router.include_router(search.router, tags=["search"])
 api_router.include_router(stock.router, tags=["stock"])
 api_router.include_router(stream.router, tags=["stream"])
 api_router.include_router(portfolio.router, tags=["risk"])
+api_router.include_router(technicals.router, tags=["technicals"])
