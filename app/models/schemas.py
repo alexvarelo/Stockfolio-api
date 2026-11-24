@@ -213,3 +213,60 @@ class HealthCheck(BaseModel):
     status: str = Field(..., description="Service status")
     version: str = Field(..., description="API version")
     timestamp: datetime = Field(..., description="Current timestamp") 
+
+# ---- Portfolio risk ----
+from typing import Literal  # noqa: E402
+from datetime import date as _date  # noqa: E402
+
+
+class PortfolioPositionInput(BaseModel):
+    ticker: str = Field(..., min_length=1, max_length=20, description="Ticker symbol")
+    quantity: float = Field(..., gt=0, description="Number of shares/units held")
+
+
+class PortfolioRiskRequest(BaseModel):
+    positions: List[PortfolioPositionInput] = Field(..., min_length=1, max_length=50)
+    benchmark: str = Field("^GSPC", description="Benchmark ticker for beta")
+    period: Literal["6mo", "1y", "2y", "3y", "5y"] = "1y"
+    risk_free_rate: float = Field(0.0, description="Annual risk-free rate as a decimal (0.03 = 3%)")
+    base_currency: str = Field("USD", min_length=3, max_length=3)
+
+
+class PortfolioWeight(BaseModel):
+    ticker: str
+    quantity: float
+    price: float = Field(..., description="Latest close in the asset's own currency")
+    currency: str
+    value_base: float = Field(..., description="Position value in base currency")
+    weight: float = Field(..., description="Fraction of portfolio value (0-1)")
+
+
+class LargestPosition(BaseModel):
+    ticker: str
+    weight: float
+
+
+class CorrelationMatrix(BaseModel):
+    tickers: List[str]
+    matrix: List[List[Optional[float]]]
+
+
+class PortfolioRiskResponse(BaseModel):
+    as_of: _date
+    period: str
+    benchmark: str
+    base_currency: str
+    total_value: float
+    weights: List[PortfolioWeight]
+    beta: Optional[float] = None
+    volatility_annual: Optional[float] = None
+    annual_return: Optional[float] = None
+    max_drawdown: Optional[float] = None
+    sharpe_ratio: Optional[float] = None
+    largest_position: LargestPosition
+    hhi: float
+    effective_positions: Optional[float] = None
+    correlation: CorrelationMatrix
+    missing_tickers: List[str]
+    observations: int
+    disclaimer: str = "Educational information, not financial advice."

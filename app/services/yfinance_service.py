@@ -7,6 +7,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from app.core import cache as cache_layer
 from app.core.exceptions import TickerNotFoundError, YFinanceError
 from app.models.schemas import PriceData, CompanyInfo, StockInfo, HistoricalDataResponse, HistoricalDataPoint, MarketData, MarketDataResponse
 
@@ -440,6 +441,39 @@ class YFinanceService:
             logger.error(f"Error getting historical data for {symbol}: {str(e)}")
             raise YFinanceError("get_historical_data", str(e))
             
+    def get_daily_closes(self, symbol: str, period: str = "1y") -> pd.Series:
+        """Daily close series (tz-naive index), cached for 12 h."""
+        key = f"closes_{symbol.upper()}_{period}"
+
+        def load() -> pd.Series:
+            try:
+                hist = yf.Ticker(symbol.upper()).history(period=period, auto_adjust=True)
+            except Exception as e:
+                logger.error(f"Error getting daily closes for {symbol}: {str(e)}")
+                raise YFinanceError("get_daily_closes", str(e))
+            if hist is None or hist.empty or "Close" not in hist:
+                raise TickerNotFoundError(symbol.upper())
+            close = hist["Close"].dropna()
+            if close.index.tz is not None:
+                close.index = close.index.tz_localize(None)
+            close.index = close.index.normalize()
+            return close
+
+        return cache_layer.daily_history_cache.get_or_set(key, load)
+
+    def get_currency(self, symbol: str) -> Optional[str]:
+        """Trading currency of a symbol (cached with prices, 12 h as it never changes)."""
+        key = f"currency_{symbol.upper()}"
+
+        def load() -> Optional[str]:
+            try:
+                return yf.Ticker(symbol.upper()).fast_info.currency
+            except Exception as e:
+                logger.warning(f"Could not get currency for {symbol}: {str(e)}")
+                return None
+
+        return cache_layer.daily_history_cache.get_or_set(key, load)
+
     def _screen_market_movers(self, screener_key: str, count: int = 25) -> List[MarketData]:
         """Run a predefined yfinance screener and map the quotes to MarketData"""
         response = yf.screen(screener_key, count=count)
