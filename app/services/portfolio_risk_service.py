@@ -24,19 +24,21 @@ SUFFIX_CURRENCY = {
 
 
 def infer_currency(ticker: str, service) -> Optional[str]:
-    """Exchange suffix first, then yfinance; no-suffix tickers default to USD. None if unknown."""
+    """yfinance's quote currency first (a .L ETF may trade in USD), then the exchange
+    suffix; no-suffix tickers default to USD. None if unknown."""
     t = ticker.upper()
-    if "." in t:
-        suffix = t.rsplit(".", 1)[1]
-        if suffix in SUFFIX_CURRENCY:
-            return SUFFIX_CURRENCY[suffix]
     try:
         cur = service.get_currency(ticker)
     except Exception:
         cur = None
     if cur:
         return cur
-    return "USD" if "." not in t else None
+    if "." in t:
+        suffix = t.rsplit(".", 1)[1]
+        if suffix in SUFFIX_CURRENCY:
+            return SUFFIX_CURRENCY[suffix]
+        return None
+    return "USD"
 
 
 def _fetch_fx(service, local: str, base: str, period: str) -> Optional[pd.Series]:

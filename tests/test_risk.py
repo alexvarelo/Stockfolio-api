@@ -204,7 +204,7 @@ def test_currency_inferred_from_suffix_and_unknown_excluded():
 
 
 def test_no_fx_reason():
-    svc = FakeService({"SAN.MC": A, "A": B, "^GSPC": BENCH})
+    svc = FakeService({"SAN.MC": A, "A": B, "^GSPC": BENCH}, {"SAN.MC": "EUR"})
     req = PortfolioRiskRequest(positions=[{"ticker": "SAN.MC", "quantity": 1}, {"ticker": "A", "quantity": 1}])
     out = compute_portfolio_risk(req, svc)
     assert [(e.ticker, e.reason) for e in out.excluded] == [("SAN.MC", "no_fx")]
@@ -237,3 +237,22 @@ def test_beta_measured_in_base_currency():
     naive = np.cov(r, BENCH.pct_change().dropna(), ddof=1)[0, 1] / BENCH.pct_change().dropna().var(ddof=1)
     assert out.beta == pytest.approx(expected, abs=1e-9)
     assert abs(expected - naive) > 1e-3
+
+
+def test_yfinance_currency_wins_over_suffix_for_usd_lse_etf():
+    # CSPX.L trades in USD on the LSE: must not be treated as GBp (÷100) by its suffix.
+    gbpusd = pd.Series(1.25, index=DATES)
+    svc = FakeService(
+        {"CSPX.L": A, "VOD.L": B, "GBPUSD=X": gbpusd, "^GSPC": BENCH},
+        {"CSPX.L": "USD", "VOD.L": None},
+    )
+    svc.get_currency = lambda s: {"CSPX.L": "USD", "^GSPC": "USD"}.get(s)
+    req = PortfolioRiskRequest(positions=[
+        {"ticker": "CSPX.L", "quantity": 2}, {"ticker": "VOD.L", "quantity": 100}])
+    out = compute_portfolio_risk(req, svc)
+    w = {x.ticker: x for x in out.weights}
+    assert w["CSPX.L"].currency == "USD"
+    assert w["CSPX.L"].value_base == pytest.approx(A.iloc[-1] * 2)
+    # No yfinance currency → falls back to suffix (.L → GBp: pence ÷100, then GBP→USD)
+    assert w["VOD.L"].currency == "GBp"
+    assert w["VOD.L"].value_base == pytest.approx(B.iloc[-1] * 100 / 100 * 1.25)
