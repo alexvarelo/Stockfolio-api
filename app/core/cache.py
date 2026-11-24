@@ -27,6 +27,7 @@ class TTLCacheBackend:
     def __init__(self, ttl: float, maxsize: int = 1024):
         self._cache: TTLCache = TTLCache(maxsize=maxsize, ttl=ttl)
         self._lock = threading.Lock()
+        self._key_locks: dict = {}
 
     def get(self, key: str) -> Optional[Any]:
         with self._lock:
@@ -41,10 +42,23 @@ class TTLCacheBackend:
         cached = self.get(key)
         if cached is not None:
             return cached
-        value = factory()
-        if value is not None:
-            self.set(key, value)
-        return value
+        # Per-key lock: concurrent cold requests for one key fetch once. The global lock is
+        # only held briefly to look up/create the key lock, never while fetching.
+        with self._lock:
+            key_lock = self._key_locks.setdefault(key, threading.Lock())
+        try:
+            with key_lock:
+                cached = self.get(key)  # filled while we waited
+                if cached is not None:
+                    return cached
+                value = factory()
+                if value is not None:
+                    self.set(key, value)
+                return value
+        finally:
+            with self._lock:
+                if not key_lock.locked():
+                    self._key_locks.pop(key, None)
 
 
 price_cache: CacheBackend = TTLCacheBackend(PRICE_TTL)
