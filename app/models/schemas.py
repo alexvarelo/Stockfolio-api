@@ -220,11 +220,21 @@ from datetime import date as _date  # noqa: E402
 
 
 TICKER_PATTERN = r"^[A-Za-z0-9.^=\-]{1,20}$"
+MAX_QUANTITY = 1e9
+MAX_MONEY = 1e9
+SUPPORTED_BASE_CURRENCIES = ("USD", "EUR", "GBP", "CHF", "JPY", "CAD", "AUD", "SEK", "NOK", "DKK", "HKD")
+
+
+def check_base_currency(v: str) -> str:
+    v = v.upper()
+    if v not in SUPPORTED_BASE_CURRENCIES:
+        raise ValueError(f"base_currency must be one of: {', '.join(SUPPORTED_BASE_CURRENCIES)}")
+    return v
 
 
 class PortfolioPositionInput(BaseModel):
     ticker: str = Field(..., pattern=TICKER_PATTERN, description="Ticker symbol")
-    quantity: float = Field(..., gt=0, description="Number of shares/units held")
+    quantity: float = Field(..., gt=0, le=MAX_QUANTITY, description="Number of shares/units held (max 1e9)")
 
 
 class PortfolioRiskRequest(BaseModel):

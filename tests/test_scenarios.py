@@ -163,13 +163,30 @@ def test_stress_historical_vs_beta_proxy_and_shocks():
     for p in shock.positions:
         beta = pos["NEW"].ret / b if p.ticker == "NEW" else None
         assert p.method == "shock"
-    # shock = beta x shock, beta consistent across scenarios
-    beta_new = pos["NEW"].ret / b
-    assert {p.ticker: p.ret for p in shock.positions}["NEW"] == pytest.approx(beta_new * -0.2)
+    # shock = (1+shock)^beta - 1, beta consistent across scenarios and exposed per position
+    beta_new = pos["NEW"].beta
+    assert pos["OLD"].beta is None                       # historical => no beta
+    assert pos["NEW"].ret == pytest.approx((1 + b) ** beta_new - 1)
+    sp = {p.ticker: p for p in shock.positions}
+    assert sp["NEW"].beta == pytest.approx(beta_new)
+    assert sp["NEW"].ret == pytest.approx(0.8 ** beta_new - 1)
     assert 0 <= beta_new <= 3
     assert shock.portfolio_return == pytest.approx(sum(p.weight * p.ret for p in shock.positions))
     assert shock.value_after == pytest.approx(out.current_value * (1 + shock.portfolio_return), abs=0.02)
     assert shock.pnl == pytest.approx(shock.value_after - out.current_value, abs=0.02)
+
+
+def test_weekly_beta_recovers_known_beta_and_defaults():
+    d = pd.bdate_range("2022-01-03", periods=520)
+    b = prices_from(1, d, 1000.0, vol=0.01)
+    s = b ** 1.0  # same path => beta ~1 on weekly returns
+    assert sc.weekly_beta(s, b) == pytest.approx(1.0, abs=1e-6)
+    assert sc.weekly_beta(b.iloc[-100:] * 2, b) == pytest.approx(1.0, abs=1e-6)  # ~20 weeks => default
+    short = pd.bdate_range("2024-01-01", periods=120)  # 24 weeks < 52
+    bs = prices_from(1, short, 1000.0)
+    assert sc.weekly_beta(prices_from(5, short), bs) == 1.0
+    assert sc.proxy_return(2.0, -0.1) == pytest.approx(0.81 - 1)
+    assert sc.proxy_return(3.0, -0.9) >= -1.0
 
 
 def mc_service():
@@ -203,6 +220,7 @@ def test_whatif_identical_portfolios_delta_zero():
                          changes={"sell": [{"ticker": "B", "quantity": 20}], "buy": [{"ticker": "C", "quantity": 5}]})
     out2 = svc.compute_whatif(req2, s)
     assert out2.delta.p50 != 0
+    assert out2.cash_from_sales > 0 and out2.delta.p50_return is not None
     assert out2.risk_modified.hhi != out2.risk_current.hhi
 
 
@@ -213,6 +231,78 @@ def test_whatif_sell_more_than_held_422():
     from fastapi import HTTPException
     with pytest.raises(HTTPException) as e:
         svc.compute_whatif(req, s)
+    assert e.value.status_code == 422
+
+
+def test_whatif_sale_proceeds_kept_as_cash():
+    s = mc_service()
+    px = svc.load_base_series(["A", "B"], "USD", "5y", s)[0]
+    last_b = float(px["B"].iloc[-1])
+    cur = MonteCarloRequest(positions=POS, paths=1000)
+    out = svc.compute_whatif(WhatIfRequest(current=cur, changes={"sell": [{"ticker": "B", "quantity": 10}]}), s)
+    assert out.cash_from_sales == pytest.approx(10 * last_b, abs=0.01)
+    # money is conserved at day 0: start_value of the modified portfolio includes the cash
+    assert out.modified.start_value == pytest.approx(out.current.start_value, abs=0.02)
+    assert out.risk_modified.hhi > 0
+    # selling everything of one asset and buying nothing: start value still the same
+    out2 = svc.compute_whatif(WhatIfRequest(current=cur, changes={"sell": [{"ticker": "B", "quantity": 20}]}), s)
+    assert out2.modified.start_value == pytest.approx(out2.current.start_value, abs=0.02)
+    # return-based delta uses each portfolio's own money in
+    m, c = out.modified, out.current
+    exp = (m.final.p50 / (m.start_value + m.total_contributions)) - (c.final.p50 / (c.start_value + c.total_contributions))
+    assert out.delta.p50_return == pytest.approx(exp, abs=1e-4)
+
+
+def test_cash_not_given_contributions_and_zero_return():
+    r = rand_returns(3, T=300, n=2)
+    r = np.concatenate([r, np.zeros((300, 1))], axis=1)
+    idx = sc.bootstrap_indices(300, 200, 63, 1)
+    sim = sc.simulate(r, np.array([100.0, 0.0, 500.0]), idx, 10.0, no_contrib=np.array([False, False, True]))
+    cash_only = sc.simulate(np.zeros((300, 1)), np.array([500.0]), idx, 0.0)
+    assert (cash_only["values"] == 500.0).all()
+    # risky part must receive 3 x 10 of contributions: total >= cash + contributions-ish > 500
+    assert sim["values"][:, -1].min() > 500.0
+    # all-zero risky + cash: contribution lands in cash
+    sim2 = sc.simulate(np.zeros((300, 2)), np.array([0.0, 500.0]), idx, 10.0, no_contrib=np.array([False, True]))
+    assert np.allclose(sim2["values"][:, -1], 530.0)
+
+
+def test_whatif_short_history_held_ticker_excluded_but_bought_required():
+    d = pd.bdate_range("2019-01-01", periods=900)
+    data = {"^GSPC": prices_from(1, d, 1000.0), "A": prices_from(2, d), "C": prices_from(4, d, 30.0),
+            "S": prices_from(9, d[-100:], 10.0)}
+    s = FakeService(data)
+    cur = MonteCarloRequest(positions=[{"ticker": "A", "quantity": 10}, {"ticker": "S", "quantity": 5}], paths=1000)
+    out = svc.compute_whatif(WhatIfRequest(current=cur, changes={"buy": [{"ticker": "C", "quantity": 1}]}), s)
+    assert {(e.ticker, e.reason) for e in out.excluded} == {("S", "short_history")}
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as e:
+        svc.compute_whatif(WhatIfRequest(current=cur, changes={"buy": [{"ticker": "S", "quantity": 1}]}), s)
+    assert e.value.status_code == 422
+
+
+def test_non_positive_prices_dropped_or_excluded():
+    d = pd.bdate_range("2019-01-01", periods=900)
+    bad = prices_from(2, d)
+    bad.iloc[400] = 0.0
+    allneg = pd.Series(-1.0, index=d)
+    s = FakeService({"^GSPC": prices_from(1, d, 1000.0), "A": prices_from(3, d), "Z": bad, "N": allneg})
+    out = svc.compute_montecarlo(MonteCarloRequest(
+        positions=[{"ticker": "A", "quantity": 1}, {"ticker": "Z", "quantity": 1}, {"ticker": "N", "quantity": 1}],
+        paths=1000), s)
+    assert [(e.ticker, e.reason) for e in out.excluded] == [("N", "invalid_prices")]
+    assert np.isfinite(out.final.p50)
+
+
+def test_whatif_ticker_union_cap_and_budget():
+    s = mc_service()
+    from fastapi import HTTPException
+    many = [{"ticker": f"T{i}", "quantity": 1} for i in range(31)]
+    with pytest.raises(HTTPException) as e:
+        svc.compute_whatif(WhatIfRequest(current=MonteCarloRequest(positions=many, paths=1000), changes={}), s)
+    assert e.value.status_code == 422 and "30" in e.value.detail
+    with pytest.raises(HTTPException) as e:
+        svc._check_budget(10000, 1260, 50)
     assert e.value.status_code == 422
 
 
@@ -253,6 +343,55 @@ def test_stress_endpoint_schema_and_return_alias(client):
     StressResponse(**body)
     assert "return" in body["scenarios"][0]["positions"][0]
     assert body["scenarios"][-1]["method"] == "shock"
+
+
+@pytest.mark.parametrize("url,body", [
+    ("montecarlo", {"positions": POS, "seed": -1}),
+    ("montecarlo", {"positions": POS, "seed": 2**32}),
+    ("montecarlo", {"positions": POS, "seed": 10**30}),
+    ("montecarlo", {"positions": [{"ticker": "A", "quantity": 1e308}]}),
+    ("montecarlo", {"positions": [{"ticker": "A", "quantity": 2e9}]}),
+    ("montecarlo", {"positions": POS, "monthly_contribution": 1e308}),
+    ("montecarlo", {"positions": POS, "base_currency": "XYZ"}),
+    ("stress", {"positions": [{"ticker": "A", "quantity": 1e308}]}),
+    ("stress", {"positions": POS, "base_currency": "ZZZ"}),
+    ("whatif", {"current": {"positions": POS, "paths": 5001}, "changes": {}}),
+    ("whatif", {"current": {"positions": POS}, "changes": {"buy": [{"ticker": "C", "quantity": 1e308}]}}),
+    ("whatif", {"current": {"positions": POS}, "changes": {"monthly_contribution": 1e300}}),
+    ("whatif", {"current": {"positions": POS, "seed": -5}, "changes": {}}),
+])
+def test_former_500s_are_422(client, url, body):
+    r = client.post(f"/api/v1/scenarios/{url}", json=body)
+    assert r.status_code == 422, r.text
+
+
+def test_non_finite_overflow_is_422_not_500(client):
+    # valid per-field bounds but price x quantity overflows -> safety net
+    d = pd.bdate_range("2019-01-01", periods=900)
+    huge = FakeService({"^GSPC": prices_from(1, d, 1000.0), "A": prices_from(2, d, 1e305)})
+    app.dependency_overrides[get_yfinance_service] = lambda: huge
+    for url, body in [("montecarlo", {"positions": [{"ticker": "A", "quantity": 1e9}]}),
+                      ("stress", {"positions": [{"ticker": "A", "quantity": 1e9}]})]:
+        r = client.post(f"/api/v1/scenarios/{url}", json=body)
+        assert r.status_code == 422 and "Non-finite" in r.json()["detail"], r.text
+
+
+def test_shocks_deduplicated(client):
+    service, *_ = stress_service()
+    app.dependency_overrides[get_yfinance_service] = lambda: service
+    r = client.post("/api/v1/scenarios/stress", json={"positions": [{"ticker": "OLD", "quantity": 5}],
+                                                      "shocks": [-0.2, -0.2, -0.20001]})
+    assert r.status_code == 200
+    assert [s["key"] for s in r.json()["scenarios"] if s["key"].startswith("shock")] == ["shock_-20"]
+
+
+def test_montecarlo_budget_422(client):
+    d = pd.bdate_range("2019-01-01", periods=900)
+    data = {"^GSPC": prices_from(1, d, 1000.0), **{f"T{i}": prices_from(i + 2, d) for i in range(40)}}
+    app.dependency_overrides[get_yfinance_service] = lambda: FakeService(data)
+    pos = [{"ticker": f"T{i}", "quantity": 1} for i in range(40)]
+    r = client.post("/api/v1/scenarios/montecarlo", json={"positions": pos, "paths": 10000, "horizon_years": 5})
+    assert r.status_code == 422 and "too large" in r.json()["detail"]
 
 
 def test_validation_and_auth(client):

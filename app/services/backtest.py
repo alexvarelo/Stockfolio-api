@@ -204,8 +204,12 @@ def run_backtest(prices: pd.DataFrame, strategy: str, weights: Dict[str, float],
                  start, end, initial_capital: float, monthly_amount: float = 0.0,
                  rebalance_frequency: str = "quarterly", rsi_buy: float = 30.0,
                  rsi_sell: float = 70.0, fast: int = 50, slow: int = 200,
-                 fee_bps: float = 0.0) -> dict:
-    """prices: aligned base-currency closes; rows before `start` are used only as indicator warm-up."""
+                 fee_bps: float = 0.0, signal_prices: Optional[pd.Series] = None) -> dict:
+    """prices: aligned base-currency closes; rows before `start` are used only as indicator warm-up.
+
+    signal_prices (rsi/ma_cross): local-currency closes on the same index, used for the indicators so
+    FX moves do not create signals; trades are still executed/valued in base currency (`prices`).
+    dca benchmark: lump sum (initial capital + all scheduled contributions invested on day 0)."""
     weights = normalize_weights(weights)
     prices = prices[list(weights)]
     mask = (prices.index >= pd.Timestamp(start)) & (prices.index <= pd.Timestamp(end))
@@ -221,10 +225,14 @@ def run_backtest(prices: pd.DataFrame, strategy: str, weights: Dict[str, float],
             flows[first_of_month] += monthly_amount
         sim = simulate_weighted(win, weights, flows, fee_bps,
                                 rebalance_frequency if strategy == "rebalance" else None)
-        bench = simulate_weighted(win, weights, flows, fee_bps, None)
+        bench_flows = flows
+        if strategy == "dca":
+            bench_flows = pd.Series(0.0, index=win.index)
+            bench_flows.iloc[0] = float(flows.sum())
+        bench = simulate_weighted(win, weights, bench_flows, fee_bps, None)
     else:
         col = win.columns[0]
-        full = prices[col]
+        full = prices[col] if signal_prices is None else signal_prices.reindex(prices.index)
         if strategy == "rsi":
             ind = rsi_wilder(full)
             prev = ind.shift(1)
