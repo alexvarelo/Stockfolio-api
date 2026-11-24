@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from enum import Enum
@@ -219,24 +219,34 @@ from typing import Literal  # noqa: E402
 from datetime import date as _date  # noqa: E402
 
 
+TICKER_PATTERN = r"^[A-Za-z0-9.^=\-]{1,20}$"
+
+
 class PortfolioPositionInput(BaseModel):
-    ticker: str = Field(..., min_length=1, max_length=20, description="Ticker symbol")
+    ticker: str = Field(..., pattern=TICKER_PATTERN, description="Ticker symbol")
     quantity: float = Field(..., gt=0, description="Number of shares/units held")
 
 
 class PortfolioRiskRequest(BaseModel):
     positions: List[PortfolioPositionInput] = Field(..., min_length=1, max_length=50)
-    benchmark: str = Field("^GSPC", description="Benchmark ticker for beta")
+    benchmark: str = Field("^GSPC", pattern=TICKER_PATTERN, description="Benchmark ticker for beta")
     period: Literal["6mo", "1y", "2y", "3y", "5y"] = "1y"
-    risk_free_rate: float = Field(0.0, description="Annual risk-free rate as a decimal (0.03 = 3%)")
-    base_currency: str = Field("USD", min_length=3, max_length=3)
+    risk_free_rate: float = Field(0.0, ge=-0.05, le=0.20,
+                                  description="Annual risk-free rate as a decimal (0.03 = 3%)")
+    base_currency: str = Field("USD", pattern=r"^[A-Za-z]{3}$")
+
+    @field_validator("base_currency")
+    @classmethod
+    def _upper_currency(cls, v: str) -> str:
+        return v.upper()
 
 
 class PortfolioWeight(BaseModel):
     ticker: str
     quantity: float
-    price: float = Field(..., description="Latest close in the asset's own currency")
+    price: float = Field(..., description="Close on valuation_date, in the asset's quoted currency/unit (pence for GBp)")
     currency: str
+    fx_rate: float = Field(..., description="Base currency per quoted unit; price * quantity * fx_rate == value_base")
     value_base: float = Field(..., description="Position value in base currency")
     weight: float = Field(..., description="Fraction of portfolio value (0-1)")
 
@@ -251,10 +261,17 @@ class CorrelationMatrix(BaseModel):
     matrix: List[List[Optional[float]]]
 
 
+class ExcludedTicker(BaseModel):
+    ticker: str
+    reason: Literal["no_history", "no_fx", "unknown_currency", "limit"]
+
+
 class PortfolioRiskResponse(BaseModel):
     as_of: _date
+    valuation_date: _date = Field(..., description="Common last date used for prices, weights and total_value")
     period: str
     benchmark: str
+    benchmark_currency: Optional[str] = Field(None, description="Currency the benchmark was converted from (null if unknown)")
     base_currency: str
     total_value: float
     weights: List[PortfolioWeight]
@@ -267,6 +284,7 @@ class PortfolioRiskResponse(BaseModel):
     hhi: float
     effective_positions: Optional[float] = None
     correlation: CorrelationMatrix
-    missing_tickers: List[str]
+    missing_tickers: List[str] = Field(..., description="Tickers of `excluded` (kept for backward compatibility)")
+    excluded: List[ExcludedTicker] = []
     observations: int
     disclaimer: str = "Educational information, not financial advice."

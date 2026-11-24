@@ -100,7 +100,7 @@ def compute_risk(prices: pd.DataFrame, quantities: Dict[str, float],
         if vol > 0:
             excess = port_ret - risk_free_rate / TRADING_DAYS
             sharpe = float(excess.mean() * TRADING_DAYS / vol)
-    if n >= 2 and values.iloc[0] > 0:
+    if enough and values.iloc[0] > 0:
         ann_ret = float((values.iloc[-1] / values.iloc[0]) ** (TRADING_DAYS / n) - 1.0)
 
     if len(tickers) == 1:

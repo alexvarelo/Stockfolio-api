@@ -135,11 +135,14 @@ def test_endpoint_schema(client):
     d = r.json()
     for k in ["as_of", "period", "benchmark", "base_currency", "total_value", "weights", "beta",
               "volatility_annual", "annual_return", "max_drawdown", "sharpe_ratio", "largest_position",
-              "hhi", "effective_positions", "correlation", "missing_tickers", "observations", "disclaimer"]:
+              "hhi", "effective_positions", "correlation", "missing_tickers", "excluded", "observations",
+              "disclaimer", "valuation_date", "benchmark_currency"]:
         assert k in d
     assert d["period"] == "1y" and d["benchmark"] == "^GSPC" and d["base_currency"] == "USD"
     assert d["missing_tickers"] == ["NOPE"]
-    assert set(d["weights"][0]) == {"ticker", "quantity", "price", "currency", "value_base", "weight"}
+    assert d["excluded"] == [{"ticker": "NOPE", "reason": "no_history"}]
+    assert d["valuation_date"] == d["as_of"] and d["benchmark_currency"] == "USD"
+    assert set(d["weights"][0]) == {"ticker", "quantity", "price", "currency", "fx_rate", "value_base", "weight"}
     assert d["correlation"]["tickers"] == ["A", "B"] and len(d["correlation"]["matrix"]) == 2
     assert d["disclaimer"] == "Educational information, not financial advice."
 
@@ -150,3 +153,87 @@ def test_endpoint_validation_and_auth(client):
     assert client.post("/api/v1/portfolio/risk", json={"positions": [{"ticker": "A", "quantity": 1}], "period": "9y"}).status_code == 422
     app.dependency_overrides.clear()
     assert TestClient(app).post("/api/v1/portfolio/risk", json={"positions": [{"ticker": "A", "quantity": 1}]}).status_code in (401, 403)
+
+
+def test_short_history_annual_return_is_null():
+    s = pd.Series([100.0, 101.0, 103.0], index=DATES[:3])
+    res = risk.compute_risk(pd.DataFrame({"A": s}), {"A": 1.0})
+    assert res["annual_return"] is None
+    assert res["max_drawdown"] == pytest.approx(0.0)
+    res = risk.compute_risk(pd.DataFrame({"A": A}), {"A": 1.0})
+    assert res["annual_return"] is not None
+
+
+POST = "/api/v1/portfolio/risk"
+
+
+def test_validation_422(client):
+    pos = [{"ticker": "A", "quantity": 1}]
+    bad = [
+        {"positions": [{"ticker": "A B", "quantity": 1}]},
+        {"positions": [{"ticker": "A;DROP", "quantity": 1}]},
+        {"positions": [{"ticker": "A" * 21, "quantity": 1}]},
+        {"positions": pos, "benchmark": "x" * 21},
+        {"positions": pos, "benchmark": "^GS PC"},
+        {"positions": pos, "base_currency": "EU"},
+        {"positions": pos, "base_currency": "E1R"},
+        {"positions": pos, "risk_free_rate": 0.5},
+        {"positions": pos, "risk_free_rate": -0.1},
+    ]
+    for body in bad:
+        assert client.post(POST, json=body).status_code == 422, body
+    ok = client.post(POST, json={"positions": pos, "base_currency": "usd", "risk_free_rate": 0.2})
+    assert ok.status_code == 200 and ok.json()["base_currency"] == "USD"
+
+
+def test_currency_inferred_from_suffix_and_unknown_excluded():
+    fx = pd.Series(1.1, index=DATES)
+    svc = FakeService(
+        {"SAN.MC": A, "XYZ.ZZ": B, "A": B, "EURUSD=X": fx, "^GSPC": BENCH},
+        {"SAN.MC": None, "XYZ.ZZ": None, "A": None})
+    svc.get_currency = lambda s: None  # yfinance returns nothing
+    req = PortfolioRiskRequest(positions=[
+        {"ticker": "SAN.MC", "quantity": 1}, {"ticker": "XYZ.ZZ", "quantity": 1}, {"ticker": "A", "quantity": 1}])
+    out = compute_portfolio_risk(req, svc)
+    cur = {w.ticker: w.currency for w in out.weights}
+    assert cur == {"SAN.MC": "EUR", "A": "USD"}
+    assert [(e.ticker, e.reason) for e in out.excluded] == [("XYZ.ZZ", "unknown_currency")]
+    assert out.missing_tickers == ["XYZ.ZZ"]
+    w = {x.ticker: x for x in out.weights}["SAN.MC"]
+    assert w.value_base == pytest.approx(A.iloc[-1] * 1.1)
+
+
+def test_no_fx_reason():
+    svc = FakeService({"SAN.MC": A, "A": B, "^GSPC": BENCH})
+    req = PortfolioRiskRequest(positions=[{"ticker": "SAN.MC", "quantity": 1}, {"ticker": "A", "quantity": 1}])
+    out = compute_portfolio_risk(req, svc)
+    assert [(e.ticker, e.reason) for e in out.excluded] == [("SAN.MC", "no_fx")]
+
+
+def test_price_times_qty_times_fx_equals_value_with_stale_series():
+    fx = pd.Series(1.25, index=DATES)
+    stale = B.iloc[:-2] * 100  # UK ticker ends two days earlier
+    svc = FakeService({"UK.L": stale, "A": A, "GBPUSD=X": fx, "^GSPC": BENCH})
+    req = PortfolioRiskRequest(positions=[{"ticker": "UK.L", "quantity": 3}, {"ticker": "A", "quantity": 2}])
+    out = compute_portfolio_risk(req, svc)
+    for w in out.weights:
+        assert w.price * w.quantity * w.fx_rate == pytest.approx(w.value_base)
+    assert str(out.valuation_date) == str(DATES[-1].date())
+
+
+def test_beta_measured_in_base_currency():
+    # EUR base, USD benchmark, EURUSD (USD per EUR) varies -> base-per-local for USD is 1/EURUSD
+    rng = np.random.default_rng(7)
+    eurusd = pd.Series(1.1 * np.cumprod(1 + rng.normal(0, 0.005, N)), index=DATES)
+    svc = FakeService({"A": A, "^GSPC": BENCH, "EURUSD=X": eurusd})
+    req = PortfolioRiskRequest(positions=[{"ticker": "A", "quantity": 10}], base_currency="eur")
+    out = compute_portfolio_risk(req, svc)
+    assert out.benchmark_currency == "USD" and out.base_currency == "EUR"
+
+    a_eur, b_eur = A / eurusd, BENCH / eurusd
+    r = a_eur.pct_change().dropna()
+    br = b_eur.pct_change().dropna()
+    expected = np.cov(r, br, ddof=1)[0, 1] / np.var(br, ddof=1)
+    naive = np.cov(r, BENCH.pct_change().dropna(), ddof=1)[0, 1] / BENCH.pct_change().dropna().var(ddof=1)
+    assert out.beta == pytest.approx(expected, abs=1e-9)
+    assert abs(expected - naive) > 1e-3

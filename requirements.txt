@@ -17,5 +17,5 @@ sqlalchemy==2.0.23
 alembic==1.12.1
 supabase==2.9.0
 cachetools==5.3.3
-numpy
-pandas
+numpy==2.0.2
+pandas==2.3.1

@@ -1,19 +1,42 @@
 """Orchestrates data fetching (via the yfinance service) and risk.py calculations."""
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
 from app.models.schemas import (
     PortfolioRiskRequest, PortfolioRiskResponse, PortfolioWeight,
-    LargestPosition, CorrelationMatrix,
+    LargestPosition, CorrelationMatrix, ExcludedTicker,
 )
 from app.services import risk
 
 logger = logging.getLogger(__name__)
 
 PENCE = {"GBp", "GBX"}
+
+SUFFIX_CURRENCY = {
+    "MC": "EUR", "DE": "EUR", "PA": "EUR", "AS": "EUR", "MI": "EUR", "BR": "EUR",
+    "LS": "EUR", "HE": "EUR", "VI": "EUR", "F": "EUR",
+    "L": "GBp", "SW": "CHF", "TO": "CAD", "AX": "AUD", "T": "JPY", "HK": "HKD",
+    "ST": "SEK", "CO": "DKK", "OL": "NOK",
+}
+
+
+def infer_currency(ticker: str, service) -> Optional[str]:
+    """Exchange suffix first, then yfinance; no-suffix tickers default to USD. None if unknown."""
+    t = ticker.upper()
+    if "." in t:
+        suffix = t.rsplit(".", 1)[1]
+        if suffix in SUFFIX_CURRENCY:
+            return SUFFIX_CURRENCY[suffix]
+    try:
+        cur = service.get_currency(ticker)
+    except Exception:
+        cur = None
+    if cur:
+        return cur
+    return "USD" if "." not in t else None
 
 
 def _fetch_fx(service, local: str, base: str, period: str) -> Optional[pd.Series]:
@@ -30,6 +53,8 @@ def _fetch_fx(service, local: str, base: str, period: str) -> Optional[pd.Series
 
 
 def compute_portfolio_risk(req: PortfolioRiskRequest, service) -> PortfolioRiskResponse:
+    from fastapi import HTTPException
+
     base = req.base_currency.upper()
     quantities: Dict[str, float] = {}
     for p in req.positions:
@@ -41,7 +66,7 @@ def compute_portfolio_risk(req: PortfolioRiskRequest, service) -> PortfolioRiskR
             closes = risk.normalize_index(service.get_daily_closes(t, req.period))
             if closes.empty:
                 return t, None, None
-            return t, closes, service.get_currency(t)
+            return t, closes, infer_currency(t, service)
         except Exception as e:
             logger.warning(f"No data for {t}: {e}")
             return t, None, None
@@ -51,71 +76,97 @@ def compute_portfolio_risk(req: PortfolioRiskRequest, service) -> PortfolioRiskR
 
     local: Dict[str, pd.Series] = {}
     currency: Dict[str, str] = {}
-    missing = []
+    excluded: Dict[str, str] = {}
     for t, closes, cur in loaded:
         if closes is None:
-            missing.append(t)
+            excluded[t] = "no_history"
+        elif cur is None:
+            logger.warning(f"Unknown currency for {t}; excluding")
+            excluded[t] = "unknown_currency"
         else:
             local[t] = closes
-            currency[t] = cur or base
+            currency[t] = cur
 
     if not local:
-        from fastapi import HTTPException
         raise HTTPException(status_code=422, detail="No price data available for any position")
 
+    # Benchmark (fetched raw; converted to base below)
+    bench_raw = None
+    bench_cur: Optional[str] = None
+    try:
+        bench_raw = risk.normalize_index(service.get_daily_closes(req.benchmark, req.period))
+        bench_cur = infer_currency(req.benchmark, service)
+        if bench_cur is None:
+            logger.warning(f"Unknown benchmark currency for {req.benchmark}; beta disabled")
+            bench_raw = None
+    except Exception as e:
+        logger.warning(f"No benchmark data for {req.benchmark}: {e}")
+
+    def code(c: str) -> str:
+        return "GBP" if c in PENCE else c
+
     # FX series, one per distinct non-base currency
-    fx: Dict[str, Optional[pd.Series]] = {}
-    for cur in {("GBP" if c in PENCE else c) for c in currency.values()}:
-        if cur != base:
-            fx[cur] = _fetch_fx(service, cur, base, req.period)
+    needed = {code(c) for c in currency.values()}
+    if bench_cur:
+        needed.add(code(bench_cur))
+    fx: Dict[str, Optional[pd.Series]] = {
+        cur: _fetch_fx(service, cur, base, req.period) for cur in needed if cur != base}
 
     converted: Dict[str, pd.Series] = {}
     for t, closes in local.items():
         cur = currency[t]
-        pence = cur in PENCE
-        cur_code = "GBP" if pence else cur
         rate = None
-        if cur_code != base:
-            rate = fx.get(cur_code)
+        if code(cur) != base:
+            rate = fx.get(code(cur))
             if rate is None:
-                logger.warning(f"No FX rate {cur_code}->{base}; excluding {t}")
-                missing.append(t)
+                logger.warning(f"No FX rate {code(cur)}->{base}; excluding {t}")
+                excluded[t] = "no_fx"
                 continue
-        converted[t] = risk.to_base_currency(closes, rate, pence)
+        converted[t] = risk.to_base_currency(closes, rate, cur in PENCE)
 
     if not converted:
-        from fastapi import HTTPException
         raise HTTPException(status_code=422, detail="No price data available for any position")
 
     bench = None
-    try:
-        bench = risk.normalize_index(service.get_daily_closes(req.benchmark, req.period))
-    except Exception as e:
-        logger.warning(f"No benchmark data for {req.benchmark}: {e}")
+    if bench_raw is not None:
+        if code(bench_cur) != base and fx.get(code(bench_cur)) is None:
+            logger.warning(f"No FX rate for benchmark {req.benchmark}; beta disabled")
+            bench_cur = None
+        else:
+            bench = risk.to_base_currency(bench_raw, fx.get(code(bench_cur)) if code(bench_cur) != base else None,
+                                          bench_cur in PENCE)
 
     union_series = dict(converted)
     if bench is not None:
         union_series["__bench__"] = bench
     aligned = risk.align_prices(union_series)
     if aligned.empty:
-        from fastapi import HTTPException
         raise HTTPException(status_code=422, detail="No overlapping trading dates between positions")
     bench_aligned = aligned.pop("__bench__") if bench is not None else None
     prices = aligned[list(converted)]
 
     kept_q = {t: quantities[t] for t in converted}
     res = risk.compute_risk(prices, kept_q, bench_aligned, req.risk_free_rate)
+    valuation_date = res["as_of"]
+    last_ts = prices.index[-1]
 
     weights = []
     for t in converted:
+        base_price = float(prices[t].iloc[-1])
+        # local quoted price at the valuation date (last close on or before it)
+        local_price = float(local[t].loc[:last_ts].iloc[-1])
         weights.append(PortfolioWeight(
-            ticker=t, quantity=kept_q[t], price=float(local[t].iloc[-1]),
-            currency=currency[t], value_base=res["position_values"][t],
-            weight=res["weights"][t],
+            ticker=t, quantity=kept_q[t], price=local_price,
+            currency=currency[t], fx_rate=base_price / local_price,
+            value_base=res["position_values"][t], weight=res["weights"][t],
         ))
 
+    excluded_list: List[ExcludedTicker] = [
+        ExcludedTicker(ticker=t, reason=r) for t, r in sorted(excluded.items())]
+
     return PortfolioRiskResponse(
-        as_of=res["as_of"], period=req.period, benchmark=req.benchmark,
+        as_of=valuation_date, valuation_date=valuation_date, period=req.period,
+        benchmark=req.benchmark, benchmark_currency=bench_cur if bench is not None else None,
         base_currency=base, total_value=res["total_value"], weights=weights,
         beta=res["beta"], volatility_annual=res["volatility_annual"],
         annual_return=res["annual_return"], max_drawdown=res["max_drawdown"],
@@ -123,5 +174,6 @@ def compute_portfolio_risk(req: PortfolioRiskRequest, service) -> PortfolioRiskR
         largest_position=LargestPosition(**res["largest_position"]),
         hhi=res["hhi"], effective_positions=res["effective_positions"],
         correlation=CorrelationMatrix(**res["correlation"]),
-        missing_tickers=sorted(set(missing)), observations=res["observations"],
+        missing_tickers=[e.ticker for e in excluded_list], excluded=excluded_list,
+        observations=res["observations"],
     )
