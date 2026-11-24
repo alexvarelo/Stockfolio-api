@@ -138,6 +138,11 @@ def test_interest_coverage():
     assert f(quarterly_state([0] * 4, ebit=20, debt=50.0)).status == "na"
 
 
+def test_interest_coverage_negative_ebit_text():
+    m = fm.interest_coverage(quarterly_state([0] * 4, ebit=-20, interest=10))
+    assert m.status == "bad" and m.explanation == "Operating result is negative, so it does not cover interest."
+
+
 def altman_state(**over):
     bal = {"Total Assets": [1000.0], "Total Liabilities Net Minority Interest": [400.0],
            "Working Capital": [200.0], "Retained Earnings": [300.0]}
@@ -159,13 +164,64 @@ def test_altman_hand_computed():
     assert m.status == "na" and m.value is None and "market cap" in m.explanation
 
 
+def test_altman_unit_distinct_from_piotroski():
+    assert fm.altman_z(altman_state(), 1200.0).unit == "ratio"
+    assert fm.altman_z(altman_state(), None).unit == "ratio"
+    assert fm.piotroski_f(piotroski_state(PREV, CUR_ALL_PASS)).unit == "score"
+
+
+def test_altman_currency_mismatch_na():
+    m = fm.altman_z(altman_state(), 1200.0, currency_mismatch=True)
+    assert m.status == "na" and m.value is None and "currency mismatch" in m.explanation.lower()
+
+
+def _info(cur, mcap=1000.0):
+    return {"currency": cur, "marketCap": mcap}
+
+
+def test_market_cap_conversion():
+    st = fm.Statements(financial_currency="USD")
+    rate = lambda a, b: {("GBP", "USD"): 1.25}.get((a, b))  # noqa: E731
+    assert fs.market_cap_for_altman(_info("USD"), st, None, rate) == (1000.0, False)
+    # GBp quote -> treated as GBP (marketCap already in GBP)
+    assert fs.market_cap_for_altman(_info("GBp"), st, None, rate) == (1250.0, False)
+    assert fs.market_cap_for_altman(_info("TWD"), st, None, rate) == (None, True)
+    assert fs.market_cap_for_altman(_info("EUR"), fm.Statements(), None, rate) == (1000.0, False)
+
+
+def test_market_cap_fx_via_service():
+    idx = pd.to_datetime(["2025-01-30", "2025-01-31"])
+    svc = FakeSvc({"TWDUSD=X": pd.Series([0.03, 0.031], index=idx)})
+    st = fm.Statements(financial_currency="USD")
+    v, mis = fs.market_cap_for_altman(_info("TWD", 1e6), st, svc)
+    assert not mis and v == pytest.approx(31000.0)
+    assert fs.market_cap_for_altman(_info("CHF"), st, svc) == (None, True)
+
+
+def test_compare_price_zero_not_missing(monkeypatch):
+    monkeypatch.setattr(fs, "get_info", lambda t: {"currency": "USD", "currentPrice": 0.0,
+                                                   "regularMarketPrice": 7.0})
+    monkeypatch.setattr(fs, "get_statements", lambda t, info=None: fm.Statements())
+    svc = FakeSvc({"AAA": _hist(1, 5, 6)})
+    assert fs.compute_compare(["AAA"], svc).rows[0].price == 0.0
+
+
+def test_stray_quarterly_column_dropped():
+    dates = list(pd.date_range("2024-03-31", periods=3, freq="QE"))
+    fr = fm.Frames(df({"Total Revenue": [10.0, 20.0, np.nan], "Gross Profit": [1.0, 2.0, 3.0]}, dates))
+    items = fm.build_items(fr, 8)
+    assert [i.revenue for i in items] == [10.0, 20.0]
+
+
 def piotroski_state(y0, y1):
     keys = ["Net Income", "Total Revenue", "Gross Profit"]
-    inc = {k: [y0[k], y1[k]] for k in keys}
-    bal = {k: [y0[k], y1[k]] for k in ["Total Assets", "Long Term Debt", "Current Assets",
-                                       "Current Liabilities", "Ordinary Shares Number"]}
-    cf = {"Operating Cash Flow": [y0["Operating Cash Flow"], y1["Operating Cash Flow"]]}
-    return fm.Statements(annual=fm.Frames(df(inc, A_DATES), df(bal, A_DATES), df(cf, A_DATES)))
+    # three periods: the oldest only supplies opening total assets for y0 (same as y0's)
+    d3 = [pd.Timestamp("2022-12-31")] + A_DATES
+    inc = {k: [np.nan, y0[k], y1[k]] for k in keys}
+    bal = {k: [y0[k], y0[k], y1[k]] for k in ["Total Assets", "Long Term Debt", "Current Assets",
+                                               "Current Liabilities", "Ordinary Shares Number"]}
+    cf = {"Operating Cash Flow": [np.nan, y0["Operating Cash Flow"], y1["Operating Cash Flow"]]}
+    return fm.Statements(annual=fm.Frames(df(inc, d3), df(bal, d3), df(cf, d3)))
 
 
 PREV = {"Net Income": 50.0, "Total Revenue": 1000.0, "Gross Profit": 300.0, "Total Assets": 1000.0,
@@ -198,8 +254,8 @@ def test_piotroski():
 def test_piotroski_partial_and_missing():
     st = fm.Statements(annual=fm.Frames(
         df({"Net Income": [10.0, 20.0]}, A_DATES), df({"Total Assets": [100.0, 100.0]}, A_DATES), None))
-    m = fm.piotroski_f(st)  # ROA>0, dROA>0 available only
-    assert m.value == 2 and "2 of 2 tests" in m.explanation
+    m = fm.piotroski_f(st)  # only ROA>0 available (needs opening assets)
+    assert m.status == "na" and m.value == 1 and "only 1 of 9 tests available" in m.explanation
     assert fm.piotroski_f(fm.Statements()).status == "na"
 
 

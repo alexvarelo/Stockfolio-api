@@ -1,7 +1,7 @@
 """Fetching layer for fundamentals: yfinance statements/info behind TTL caches, then pure maths."""
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import yfinance as yf
@@ -74,13 +74,41 @@ def get_financials(ticker: str, period: str) -> FinancialsResponse:
                               items=fm.build_items(fr, N_ITEMS[period]))
 
 
-def get_health(ticker: str) -> HealthResponse:
+def _ccy(c: Optional[str]) -> Optional[str]:
+    return ("GBP" if c in PENCE else c.upper()) if c else None
+
+
+def _fx_rate(service, frm: str, to: str) -> Optional[float]:
+    if service is None:
+        return None
+    s = _fetch_fx(service, frm, to, "5d")
+    if s is None or s.dropna().empty:
+        return None
+    return float(s.dropna().iloc[-1])
+
+
+def market_cap_for_altman(info: Dict[str, Any], st: fm.Statements, service,
+                          rate_fn=None) -> Tuple[Optional[float], bool]:
+    """Market cap expressed in the statements' currency -> (value, currency_mismatch).
+    yfinance marketCap is in the quote currency (already GBP for pence-quoted .L stocks) while
+    statements use `financialCurrency`. mismatch=True when conversion is needed but no FX rate."""
+    mcap = fm._num(info.get("marketCap"))
+    quote, fin = _ccy(info.get("currency")), _ccy(st.financial_currency)
+    if mcap is None or not quote or not fin or quote == fin:
+        return mcap, False
+    rate = rate_fn(quote, fin) if rate_fn else _fx_rate(service, quote, fin)
+    if rate is None:
+        return None, True
+    return mcap * rate, False
+
+
+def get_health(ticker: str, service=None) -> HealthResponse:
     from datetime import date
     t = ticker.upper()
     st = get_statements(t)
-    market_cap = get_info(t).get("marketCap")
+    mcap, mismatch = market_cap_for_altman(get_info(t), st, service)
     return HealthResponse(ticker=t, as_of=fm.latest_period_end(st) or date.today(),
-                          metrics=fm.compute_health(st, fm._num(market_cap)))
+                          metrics=fm.compute_health(st, mcap, mismatch))
 
 
 # ---------------------------------------------------------------- compare
@@ -139,6 +167,12 @@ def compute_compare(tickers: List[str], service) -> CompareResponse:
             fx_cache[code] = float(s.dropna().iloc[-1]) if s is not None and not s.dropna().empty else None
         return fx_cache[code]
 
+    def _cached_rate(a: str, b: str) -> Optional[float]:
+        k = f"{a}->{b}"
+        if k not in fx_cache:
+            fx_cache[k] = _fx_rate(service, a, b)
+        return fx_cache[k]
+
     rows: List[CompareRow] = []
     missing: List[str] = []
     for t, d in zip(tickers, loaded):
@@ -147,14 +181,17 @@ def compute_compare(tickers: List[str], service) -> CompareResponse:
             continue
         info, closes, st, cur = d["info"], d["closes"], d["st"], d["currency"]
         num = lambda k: fm._num(info.get(k))  # noqa: E731
-        price = num("currentPrice") or num("regularMarketPrice")
+        price = num("currentPrice")
+        if price is None:
+            price = num("regularMarketPrice")
         if price is None and closes is not None:
             price = float(closes.iloc[-1])
         mcap = num("marketCap")
         rate = to_usd_rate(cur) if mcap is not None else None
         hm: Dict[str, Optional[float]] = {}
         if st is not None:
-            hm = {m.key: m.value for m in fm.compute_health(st, mcap)}
+            h_mcap, mismatch = market_cap_for_altman(info, st, service, _cached_rate)
+            hm = {m.key: m.value for m in fm.compute_health(st, h_mcap, mismatch)}
         cr = num("currentRatio")
         if cr is None and st is not None:
             ca, cl = fm._latest_bs(st, "current_assets"), fm._latest_bs(st, "current_liabilities")

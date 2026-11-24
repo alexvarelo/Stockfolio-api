@@ -150,7 +150,8 @@ def _margin(num: Optional[float], rev: Optional[float]) -> Optional[float]:
 
 
 def build_items(fr: Frames, n: int) -> List[FinancialItem]:
-    """Last `n` periods, oldest first; periods with no data at all are dropped."""
+    """Last `n` periods, oldest first; periods lacking revenue, net income, operating cash flow
+    and cash are dropped."""
     out: List[FinancialItem] = []
     for col in fr.periods():
         rev = val(fr, "revenue", col)
@@ -163,8 +164,8 @@ def build_items(fr: Frames, n: int) -> List[FinancialItem]:
             total_debt=val(fr, "total_debt", col), net_debt=val(fr, "net_debt", col),
             shares_outstanding=val(fr, "shares", col), ebitda=val(fr, "ebitda", col),
         )
-        if all(v is None for v in data.values()):
-            continue
+        if all(v is None for v in (rev, ni, data["operating_cash_flow"], data["cash"])):
+            continue  # nearly-empty period (e.g. stray quarterly column)
         out.append(FinancialItem(period_end=pd.Timestamp(col).date(), **data))
     return out[-n:]
 
@@ -287,17 +288,22 @@ def interest_coverage(st: Statements) -> HealthMetric:
     if ebit is None:
         return _na(key, label, "x", "EBIT is not available.")
     r = ebit / interest
+    if ebit <= 0:
+        return _m(key, label, "x", r, "bad", "Operating result is negative, so it does not cover interest.")
     status = "good" if r > 5 else "warn" if r > 2 else "bad"
     return _m(key, label, "x", r, status, f"Operating profit covers interest {r:.1f} times.")
 
 
-def altman_z(st: Statements, market_cap: Optional[float]) -> HealthMetric:
+def altman_z(st: Statements, market_cap: Optional[float], currency_mismatch: bool = False) -> HealthMetric:
     key, label = "altman_z", "Altman Z-score"
     note = " Designed for manufacturers; less meaningful for financials."
+    U = "ratio"  # distinct from Piotroski's "score"
+    if currency_mismatch:
+        return _na(key, label, U, "Currency mismatch: market cap could not be converted to the reporting currency." + note)
     fr = st.annual
     cols = fr.periods()
     if not cols:
-        return _na(key, label, "score", "Annual statements are not available." + note)
+        return _na(key, label, U, "Annual statements are not available." + note)
     c = cols[-1]
     ta, tl = val(fr, "total_assets", c), val(fr, "total_liabilities", c)
     wc, re_ = val(fr, "working_capital", c), val(fr, "retained_earnings", c)
@@ -306,13 +312,13 @@ def altman_z(st: Statements, market_cap: Optional[float]) -> HealthMetric:
                               ("retained earnings", re_), ("EBIT", ebit), ("sales", sales),
                               ("market cap", market_cap)) if v is None]
     if missing:
-        return _na(key, label, "score", f"Missing: {', '.join(missing)}." + note)
+        return _na(key, label, U, f"Missing: {', '.join(missing)}." + note)
     if not ta or not tl:
-        return _na(key, label, "score", "Total assets or liabilities are zero." + note)
+        return _na(key, label, U, "Total assets or liabilities are zero." + note)
     z = (1.2 * wc / ta + 1.4 * re_ / ta + 3.3 * ebit / ta + 0.6 * market_cap / tl + 1.0 * sales / ta)
     status = "good" if z > 2.99 else "warn" if z >= 1.81 else "bad"
     zone = {"good": "safe", "warn": "grey", "bad": "distress"}[status]
-    return _m(key, label, "score", z, status, f"Z-score of {z:.2f} falls in the {zone} zone." + note)
+    return _m(key, label, U, z, status, f"Z-score of {z:.2f} falls in the {zone} zone." + note)
 
 
 def piotroski_f(st: Statements) -> HealthMetric:
@@ -329,11 +335,16 @@ def piotroski_f(st: Statements) -> HealthMetric:
     def ratio(a, b):
         return None if a is None or b in (None, 0) else a / b
 
-    def roa(c): return ratio(g("net_income", c), g("total_assets", c))
+    prev = {cols[i]: cols[i - 1] for i in range(1, len(cols))}  # period -> prior period
+
+    def open_assets(c):  # total assets at the start of the year = prior period end
+        return g("total_assets", prev[c]) if c in prev else None
+
+    def roa(c): return ratio(g("net_income", c), open_assets(c))
     def lev(c): return ratio(g("long_term_debt", c), g("total_assets", c))
     def cur(c): return ratio(g("current_assets", c), g("current_liabilities", c))
     def gm(c): return ratio(g("gross_profit", c), g("revenue", c))
-    def at(c): return ratio(g("revenue", c), g("total_assets", c))
+    def at(c): return ratio(g("revenue", c), open_assets(c))
 
     def cmp(f, op):
         a, b = f(c1), f(c0)
@@ -357,15 +368,19 @@ def piotroski_f(st: Statements) -> HealthMetric:
     if not avail:
         return _na(key, label, "score", "Statement data needed for the tests is not available.")
     score = sum(1 for t in avail if t)
+    if len(avail) < 7:
+        return _m(key, label, "score", float(score), "na",
+                  f"Passes {score} of {len(avail)} tests; only {len(avail)} of 9 tests available.")
     status = "good" if score >= 7 else "warn" if score >= 4 else "bad"
     return _m(key, label, "score", float(score), status,
               f"Passes {score} of {len(avail)} tests"
               + (" (some inputs missing)." if len(avail) < 9 else "."))
 
 
-def compute_health(st: Statements, market_cap: Optional[float]) -> List[HealthMetric]:
+def compute_health(st: Statements, market_cap: Optional[float],
+                   currency_mismatch: bool = False) -> List[HealthMetric]:
     return [cash_runway(st), dilution_yoy(st), net_debt_to_ebitda(st), interest_coverage(st),
-            altman_z(st, market_cap), piotroski_f(st)]
+            altman_z(st, market_cap, currency_mismatch), piotroski_f(st)]
 
 
 def latest_period_end(st: Statements) -> Optional[date]:

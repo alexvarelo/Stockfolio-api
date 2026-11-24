@@ -44,8 +44,9 @@ def get_financials(
 def get_health(
     ticker: str = Path(..., pattern=TICKER_PATTERN),
     client: Dict[str, Any] = Depends(get_current_client),
+    service: YFinanceService = Depends(get_yfinance_service),
 ) -> HealthResponse:
-    return fundamentals_service.get_health(ticker)
+    return fundamentals_service.get_health(ticker, service)
 
 
 @router.get("/compare", response_model=CompareResponse, responses=_RESPONSES,
