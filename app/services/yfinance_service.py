@@ -461,6 +461,26 @@ class YFinanceService:
 
         return cache_layer.daily_history_cache.get_or_set(key, load)
 
+    def get_daily_ohlcv(self, symbol: str, period: str = "1y") -> pd.DataFrame:
+        """Daily OHLCV DataFrame (columns Open, High, Low, Close, Volume; tz-naive index), cached for 12 h."""
+        key = f"ohlcv_{symbol.upper()}_{period}"
+
+        def load() -> pd.DataFrame:
+            try:
+                hist = yf.Ticker(symbol.upper()).history(period=period, auto_adjust=True)
+            except Exception as e:
+                logger.error(f"Error getting daily OHLCV for {symbol}: {str(e)}")
+                raise YFinanceError("get_daily_ohlcv", str(e))
+            if hist is None or hist.empty or "Close" not in hist:
+                raise TickerNotFoundError(symbol.upper())
+            df = hist[["Open", "High", "Low", "Close", "Volume"]].dropna(subset=["Close"]).copy()
+            if df.index.tz is not None:
+                df.index = df.index.tz_localize(None)
+            df.index = df.index.normalize()
+            return df
+
+        return cache_layer.daily_history_cache.get_or_set(key, load)
+
     def get_currency(self, symbol: str) -> Optional[str]:
         """Trading currency of a symbol (cached with prices, 12 h as it never changes)."""
         key = f"currency_{symbol.upper()}"
