@@ -7,7 +7,7 @@ WINDOW = 252
 
 
 def percentile_rank(series: pd.Series, window: int = WINDOW) -> Optional[float]:
-    """Share (0-100) of the last `window` values that are <= the latest value.
+    """Mid-rank percentile (0-100): share of the other values in the last `window` below the latest, plus half of the ties.
 
     Min of the window -> small value (1/n*100 if unique); we use the mean of
     strict-below and at-or-below shares (mid-rank) so that the minimum maps to 0

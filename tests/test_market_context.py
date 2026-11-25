@@ -63,6 +63,7 @@ def test_compute_full():
     assert res.indicators[0].extra is None and len(sp.sparkline) == 60
     assert res.indicators[1].unit == "percent"
     assert res.breadth is None and any("breadth" in n for n in res.notes)
+    assert all(i.description and i.as_of == DATES[-1].strftime("%Y-%m-%d") for i in res.indicators)
     assert res.as_of == DATES[-1].strftime("%Y-%m-%d")
 
 
@@ -75,19 +76,52 @@ def test_partial_failure():
     assert any("^TNX" in n for n in res.notes)
 
 
-def test_partial_failure_not_cached():
-    svc.market_cache.set("context", None)
+def _clear():
     svc.market_cache._cache.clear()
-    svc.get_market_context(lambda s: (_ for _ in ()).throw(ValueError("x")))
+    svc.partial_cache._cache.clear()
+
+
+def test_partial_result_cached_short_ttl():
+    _clear()
+    calls = []
+
+    def flaky(s):
+        calls.append(s)
+        if s == "DX-Y.NYB":
+            raise ValueError("x")
+        return DATA[s]
+
+    svc.get_market_context(flaky)
+    svc.get_market_context(flaky)
+    assert len(calls) == 4  # second call served from the partial cache
     assert svc.market_cache.get("context") is None
-    svc.get_market_context(fetcher)
+    assert svc.partial_cache.get("context") is not None
+    assert svc.partial_cache._cache.ttl == 90 and svc.market_cache._cache.ttl == 900
+    _clear()
+
+
+def test_concurrent_cold_calls_fetch_once():
+    import threading
+    import time
+    _clear()
+    calls = []
+
+    def slow(s):
+        calls.append(s)
+        time.sleep(0.05)
+        return DATA[s]
+
+    threads = [threading.Thread(target=svc.get_market_context, args=(slow,)) for _ in range(8)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert len(calls) == 4
     assert svc.market_cache.get("context") is not None
-    svc.market_cache._cache.clear()
+    _clear()
 
 
 @pytest.fixture
 def client():
-    svc.market_cache._cache.clear()
+    _clear()
     app.dependency_overrides[get_current_client] = lambda: {"id": "test"}
     app.dependency_overrides[get_market_context_provider] = lambda: (lambda: svc.compute_market_context(fetcher))
     yield TestClient(app)
@@ -101,7 +135,8 @@ def test_endpoint_schema(client):
     assert set(d) == {"as_of", "indicators", "breadth", "notes", "disclaimer"}
     assert d["disclaimer"] == "Educational information, not financial advice."
     assert set(d["indicators"][0]) == {"key", "label", "symbol", "unit", "value", "change_1d",
-                                       "percentile_1y", "sparkline", "extra", "reading"}
+                                       "percentile_1y", "sparkline", "extra", "reading",
+                                       "description", "as_of"}
     assert d["indicators"][3]["extra"].keys() == {"sma50_distance", "sma200_distance"}
 
 

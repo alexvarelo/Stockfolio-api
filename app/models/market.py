@@ -15,9 +15,11 @@ class MarketIndicator(BaseModel):
     label: str
     symbol: str
     unit: str = Field(..., description="index | percent")
+    description: Optional[str] = Field(None, description="Static plain-language description of the indicator")
+    as_of: Optional[str] = Field(None, description="Date (YYYY-MM-DD) of this indicator's last close")
     value: Optional[float] = None
     change_1d: Optional[float] = Field(None, description="Percent change vs previous close (for us10y: change in percentage points)")
-    percentile_1y: Optional[float] = Field(None, description="0-100, share of the last ~252 sessions with a value at or below today's")
+    percentile_1y: Optional[float] = Field(None, description="0-100 mid-rank percentile over the last ~252 sessions: share of other sessions below today's value plus half of those equal to it")
     sparkline: List[float] = Field(default_factory=list, description="Last ~60 closes")
     extra: Optional[SmaDistance] = None
     reading: Optional[str] = Field(None, description="Neutral, purely descriptive sentence")
